@@ -448,8 +448,8 @@ HTML = r"""<!doctype html>
         title="串数写成分段（如 2+3）时，支架两侧之间的固定距离">
       <label>板间净空</label><input type="number" id="gapx" value="1" step="1"
         title="同一串里，板与板之间的净空">
-      <label>串间净空</label><input type="number" id="gapy" value="30" step="1"
-        title="串与串之间的净空；留空 = 跟板间净空一样（贴紧）。默认 30 ≈ 一个板宽，这样 4 串一眼能看出是 4 串">
+      <label>串间净空</label><input type="number" id="gapy" value="2" step="1"
+        title="串与串之间的净空；留空 = 跟板间净空一样（贴紧）。默认 2（贴紧排，跟板间净空一个口径）">
       <label>串的排法</label><select id="dir">
         <option value="right">从左往右接</option>
         <option value="down">从上往下叠</option></select>
@@ -466,7 +466,8 @@ HTML = r"""<!doctype html>
         <button class="ghost" onclick="addBhaSeg()" title="每个支架（每段）中点各一处，串数写 3+3 时就是前后各一个">每段中点插一处</button>
         <button class="ghost" onclick="clearBha()">清空</button>
         <span id="bhaHint" style="font-size:12px;color:var(--muted)">
-          两块板之间插一个 BHA 桩块（可再挂电机）；位置 = 整排第几块之后（不分串）：4 串 × 20 块共 80 块，填 40 就是正中间；0 或留空 = 最前面；写“每段” = 每段中点各一处。留空整列 = 不插桩。</span>
+          两块板之间插一个 BHA 桩块（可再挂电机）；位置 = 整排第几块之后（不分串）：4 串 × 20 块共 80 块，填 40 就是正中间；0 或留空 = 最前面；写“每段” = 每段中点各一处。留空整列 = 不插桩。
+          桩块/电机块从块库里选；块库里还没有 BHA 桩块时，可以先用电机块（MOTOR）顶 —— 插进去照样按桩算净空、它右边的板整体右移。</span>
       </div>
       <div id="bhaBox" style="max-height:118px;overflow:auto;border:1px solid var(--line);border-radius:8px">
         <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -513,14 +514,19 @@ HTML = r"""<!doctype html>
         <label><input type="checkbox" id="bsheet"> 拼成一张图纸</label>
         <span style="font-size:12px;color:var(--muted)">一行 = 一张图（各调一份新外框模板，互相独立）：默认
           <b>每张各自出一个 DXF</b>（＋一个打包 zip）；勾上“拼成一张图纸”才全部拼进同一个 DXF。
+          勾了“直接画到 CAD”时：连着画的这些图<b>不清</b>前面的，都留在同一张 DWG 里、
+          位置自动错开（同一列先从上往下排，排满了往右挪一列）。
           填完点“下一步：填线束”，在线束页按“生成”一次画完。
           每行的<b>BHA位置</b>留空 = 沿用“光伏阵列”模式下那张桩表。</span>
       </div>
     </div>
     <div class="row" id="sheetRow" style="display:none">
-      <label>每行放</label><input type="number" id="sheetc" value="2" min="1" max="20" step="1" style="width:60px">
-      <label>图间距 X</label><input type="number" id="sheetgx" value="300" step="50" style="width:80px">
-      <label>图间距 Y</label><input type="number" id="sheetgy" value="300" step="50" style="width:80px">
+      <label>每行放</label><input type="number" id="sheetc" value="2" min="1" max="20" step="1" style="width:60px"
+        title="拼成一张图纸时每行放几张；连着画到 CAD 时也按这个数——同一列先从上往下排这么多张，排满了往右挪一列">
+      <label>图间距 X</label><input type="number" id="sheetgx" value="300" step="50" style="width:80px"
+        title="图与图之间的左右净空（拼图排格子、连着画到 CAD 都用它）">
+      <label>图间距 Y</label><input type="number" id="sheetgy" value="300" step="50" style="width:80px"
+        title="图与图之间的上下净空（拼图排格子、连着画到 CAD 都用它）">
       <label>排法</label><select id="sheetorder" style="max-width:260px">
         <option value="row">先横后竖（左→右，然后下一行）</option>
         <option value="col">先竖后横（上→下，然后下一列）</option>
@@ -563,7 +569,7 @@ HTML = r"""<!doctype html>
       <label>末端母头块</label><input type="text" id="negplug" value="Fmale" style="width:80px"
              title="填了才会自动生成负极那一行（头部接头 + 中间负极支线 + 末端母头）">
       <label>主线线号</label><select id="awgmain" style="width:110px"
-        title="主线 = 正极/负极支线块之间连的线 + 第一个接头到第一根正极/负极支线之间的连线；标的就是这个线号">
+        title="主线 = 正极/负极支线块之间连的线 + 第一个接头到第一根正极/负极支线之间的连线；标的就是这个线号（图上标注一律写成 #线号，如 2/0 AWG → #2/0、10 AWG → #10）">
         <option>750 MCM</option>
         <option>500 MCM</option>
         <option selected>2/0 AWG</option>
@@ -574,7 +580,7 @@ HTML = r"""<!doctype html>
         <option value="">（不指定）</option>
       </select>
       <label>支线线号</label><select id="awgbranch" style="width:100px"
-        title="支线 = 正极/负极支线块 + 最后一根支线块到公头/母头之间的连线；标的就是这个线号">
+        title="支线 = 正极/负极支线块 + 最后一根支线块到公头/母头之间的连线；标的就是这个线号（图上标注一律写成 #线号，如 10 AWG → #10）">
         <option selected>10 AWG</option>
         <option>12 AWG</option>
         <option value="">（不指定）</option>
@@ -596,7 +602,7 @@ HTML = r"""<!doctype html>
       <label><input type="checkbox" id="pts"> 画连接点(POINT)</label>
       <label>间隔 GAP</label><input type="number" id="gap" value="40" step="5">
       <label>外框图</label><select id="frame" onchange="onFrameChange()"><option value="">不用</option></select>
-      <label><input type="checkbox" id="tocad"> 直接画到 CAD(COM)</label>
+      <label><input type="checkbox" id="tocad" title="画进 CAD 里那张外框图上；连着生成几张时不删前面的图，一张一张错开排（同一列先从上往下，排满了往右一列）"> 直接画到 CAD(COM)</label>
       <button onclick="gen()">生成</button>
       <button class="ghost" onclick="gotoStep(1)">← 上一步</button>
       <button class="ghost" onclick="clearChain()">清空</button>
@@ -743,10 +749,10 @@ const AWG_BRANCH=['10 AWG','12 AWG'];
 function setMode(m){
   mode=(m==='batch')?'batch':'array';
   document.getElementById('arrayRow').style.display='flex';
-  // 批量那一页内容多（BHA 表 + 批量表 + 预览），整页要一屏放下，所以批量模式下
-  // 把 BHA 表收起来 —— 批量表每行本来就有“BHA位置”一列，电机/BHA 在那一列里填；
-  // 想统一设一套，就先在“光伏阵列”模式下把桩表填好，批量行留空就会沿用它。
-  document.getElementById('bhaRow').style.display=(mode==='batch')?'none':'flex';
+  // 批量模式下这张桩表**照样显示**（只在批量时压矮一点）：它是给所有批量行用的
+  // “默认一套” —— 每行的“BHA位置”那格留空就沿用它，填了就只按那一行自己的来。
+  // （以前这里把整张表藏起来，结果批量页里根本找不到地方加电机/BHA。）
+  document.getElementById('bhaRow').style.display='flex';
   document.getElementById('batchRow').style.display=(mode==='batch')?'flex':'none';
   document.getElementById('sheetRow').style.display=(mode==='batch')?'flex':'none';
   // 批量模式内容多，把两行说明收起来，保证整页还是“一屏放下”（不用上下滚）
@@ -826,7 +832,7 @@ async function doPreview(){
               bracket_gap:parseFloat(v('brkgap',4))||4,
               gap_x:parseFloat(v('gapx',1))||0,
               // 串间净空：界面上单独一格；留空 = 跟随板间净空
-              gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',30))||0)),
+              gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',2))||0)),
               dir:v('dir','right'),
               head_block:String(v('headblk','CBX')||'').trim(),
               head_gap:parseFloat(v('headgap',60))||60,
@@ -869,7 +875,7 @@ async function doPreviewBatch(){
                 n_strings:String((r._nstrEl?r._nstrEl.value:r.n_str)||v('nstr','4')||'4').trim(),
                 bracket_gap:parseFloat(v('brkgap',4))||4,
                 gap_x:parseFloat(v('gapx',1))||0,
-                gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',30))||0)),
+                gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',2))||0)),
                 dir:v('dir','right'),
                 head_block:String(v('headblk','CBX')||'').trim(),
                 head_gap:parseFloat(v('headgap',60))||60,
@@ -1049,7 +1055,7 @@ function arrayCommon(){
           n_strings:String(v('nstr','4')||'4').trim(),
           bracket_gap:parseFloat(v('brkgap',4))||4,
           gap_x:parseFloat(v('gapx',1))||0,
-          gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',30))||0)),
+          gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',2))||0)),
           dir:v('dir','right'),
           harness_scale:parseFloat(v('hscale',1))||1,
           fixed_gap:parseFloat(v('fixgap',30))||30,
@@ -1069,6 +1075,10 @@ function arrayCommon(){
           awg_branch:String(v('awgbranch','')||'').trim(),
           annot:v('annot','text')||'text',
           allow_enlarge:ck('enlarge'),
+          // 连着画到 CAD 时的落点：一列几张 + 图间距（拼图排格子也用这几个数）
+          cols:parseInt(v('sheetc',2))||2,
+          gap_sheet_x:parseFloat(v('sheetgx',300))||0,
+          gap_sheet_y:parseFloat(v('sheetgy',300))||0,
           bha:bhaPayload()};
 }
 // 方案的生成逻辑逐个补；现在只有“串的排法”按方案自动定：
@@ -1208,10 +1218,10 @@ function renderBatch(){
     // 这一张图自己的 BHA 桩/电机位置：留空 = 沿用上面那张表
     c=td(); e=document.createElement('input'); e.type='text';
     e.value=r.bha||''; e.placeholder='同上';
-    e.title='写法：整排第几块之后:桩块:电机块:旋转:左净空:右净空，多处用 ; 隔开；' +
-            '位置按整排连续数（不分串）：4 串 × 20 块填 40 = 正中间；' +
-            '写“每段”=每段中点各一处。例 40:BHA:MOTOR:0 或 20:BHA:MOTOR:90;60:BHA。' +
-            '留空 = 沿用上面那张 BHA 表';
+    e.title='写法：整排第几块之后:桩块:电机块:旋转:左净空:右净空（后面的都能省），多处用 ; 隔开；' +
+            '位置按整排连续数（不分串）：4 串 × 20 块填 40 = 正中间；写“每段”=每段中点各一处。' +
+            '例 40:BHA:MOTOR:0（BHA 桩 + 电机；块库里没有 BHA 时自动拿电机块当桩）' +
+            '或 20:MOTOR::0（只放一个电机）。留空 = 沿用上面那张桩表；填了就只按这一行来。';
     e.style.width='190px'; e.oninput=()=>{r.bha=e.value;}; c.appendChild(e);
     c=td(); e=document.createElement('input'); e.type='text';
     e.value=r.note||''; e.style.width='100%'; e.oninput=()=>{r.note=e.value;}; c.appendChild(e);
@@ -1397,6 +1407,28 @@ window.checkUpdate=async function(apply){
 </script>
 </body></html>
 """
+
+
+def place_opts(req):
+    """连续画到 CAD 的落点参数：一列排几张 + 图与图的净空。
+
+    和“拼成一张图纸”的排格子共用界面上那组数（每行放 / 图间距 X、Y）——
+    用户看到的排法只有一处可调，CAD 里连着画的间距跟拼图预览是对得上的。
+    """
+    try:
+        cols = int(req.get("cols", 2) or 2)
+    except (TypeError, ValueError):
+        cols = 2
+
+    def f(v, d):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+
+    return {"place_per_col": max(1, cols),
+            "place_gap": (f(req.get("gap_sheet_x"), 300.0),
+                          f(req.get("gap_sheet_y"), 300.0))}
 
 
 def array_spec(req, over=None):
@@ -1691,7 +1723,19 @@ class Handler(BaseHTTPRequestHandler):
             dwg = os.path.join(FRAMES_DIR, os.path.splitext(frame_name)[0] + ".dwg")
             _blks = set(_st.get("blocks") or [])
             if not _blks:
-                log.append("⚠ 拿不到这张图用到的块清单，画到 CAD 时按全部块回放")
+                # 兜底：生成器没回填清单时，按参数自己拼一份（含自动补的公头/母头/
+                # 负极支线），**不要**退回“全部块回放” —— 那会把外框图自带的
+                # Frame1 / SLD_NOTES 也当成我们的块删掉重建。
+                _blks = set([x for x in (spec.get("module", ""), spec.get("module_first", ""),
+                                         spec.get("module_mid", ""), spec.get("module_last", ""),
+                                         spec.get("head_block", ""), spec.get("pos_plug", ""),
+                                         spec.get("neg_plug", ""), spec.get("neg_head", ""),
+                                         spec.get("pos_feeder", ""), spec.get("neg_feeder", ""),
+                                         spec.get("fuse_block", ""))
+                             if x] + list(spec.get("harness") or [])
+                            + wr.bha_block_names(spec.get("bha"), 0, 0))
+                log.append("⚠ 拿不到这张图用到的块清单，退回按参数拼的名单（%d 个块）"
+                           % len(_blks))
             try:
                 cd.draw_dxf_into_cad(outpath, dwg, log,
                                      use_original=bool(req.get("cad_original")),
@@ -1700,7 +1744,11 @@ class Handler(BaseHTTPRequestHandler):
                                        # 以前是按界面参数自己拼名单，自动补出来的
                                        # 起始块(CBX)/公头/母头/负极支线不在名单里，
                                        # 画到 CAD 时就整条丢了 —— 现在不会了。
-                                       only_blocks=(_blks or None),
+                                       only_blocks=_blks,
+                                       # 连续画图：不清前面那张，接着在同一张 DWG 里
+                                       # 错开排（从上往下、排满往右一列）
+                                       auto_place=True, clear_first=False,
+                                       **place_opts(req),
                                        progress=pg)
             except Exception as ex:
                 import traceback
@@ -1797,8 +1845,10 @@ class Handler(BaseHTTPRequestHandler):
                                            % (n, total, it["name"],
                                               os.path.basename(it["frame"]))]
                 spec = it["spec"]
+                _st = {}
                 text, log2, wires = wr.build_array_frame(it["frame"], spec,
-                                                         log=box["log"], progress=pg)
+                                                         log=box["log"], progress=pg,
+                                                         stats=_st)
                 box["log"] = log2 or box["log"]
                 if not text:
                     box["log"].append("⚠ %s 没画出来，跳过这张" % it["name"])
@@ -1820,11 +1870,19 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         cd.draw_dxf_into_cad(
                             outpath, dwg, box["log"], use_original=False, copy_dir=OUTDIR,
-                            only_blocks=set(
+                            # 只回放**这张图真正画出来的块**（生成器回填 stats["blocks"]）。
+                            # 以前这里按界面参数自己拼名单：链是空的、自动补出来的
+                            # CBX / 正极支线 / 公头 / 母头 / 负极支线都不在名单里，
+                            # 画到 CAD 时整条就丢了 —— 批量模式一直在踩这个坑。
+                            only_blocks=(set(_st.get("blocks") or []) or set(
                                 [x for x in (spec.get("module", ""), spec.get("module_first", ""),
                                              spec.get("module_mid", ""), spec.get("module_last", ""))
                                  if x] + list(spec.get("harness") or [])
-                                + wr.bha_block_names(spec.get("bha"), 0, 0)),
+                                + wr.bha_block_names(spec.get("bha"), 0, 0))),
+                            # 连续画图：每张都接着上一张往下排（不清图），
+                            # 一列排满“每行放”那么多张就往右挪一列
+                            auto_place=True, clear_first=False,
+                            **place_opts(req),
                             progress=pg)
                     except Exception as ex:
                         import traceback
@@ -1895,6 +1953,9 @@ class Handler(BaseHTTPRequestHandler):
                 cd.draw_dxf_into_cad(outpath, dwg, log,
                                      use_original=False,      # 一律画副本，不动外框原文件
                                      copy_dir=OUTDIR, only_blocks=set(names),
+                                     # 连续画图：整张拼图也当成“一张”，不清前面的
+                                     auto_place=True, clear_first=False,
+                                     **place_opts(req),
                                      progress=pg, sheet_names=names)
             except Exception as ex:
                 import traceback
