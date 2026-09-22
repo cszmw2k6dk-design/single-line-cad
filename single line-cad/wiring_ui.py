@@ -459,8 +459,9 @@ HTML = r"""<!doctype html>
       <label><input type="checkbox" id="enlarge"> 允许放大到占满</label>
     </div>
     <div class="row" id="bhaRow" style="display:none;flex-direction:column;align-items:stretch">
-      <div class="row" style="margin-top:0;align-items:center;gap:8px">
-        <b>电机 / BHA 桩位置</b>
+      <details id="bhaDetails" style="border:1px solid var(--line);border-radius:8px;padding:6px 8px">
+      <summary style="cursor:pointer;font-weight:600">电机 / BHA 桩位置（点开填；填完点一下标题收起）</summary>
+      <div class="row" style="margin-top:6px;align-items:center;gap:8px">
         <button class="ghost" onclick="addBha()">加一处</button>
         <button class="ghost" onclick="addBhaMid()" title="按整排总块数取中间：4 串 × 20 块 → 第 40 块之后">整排中间插一处</button>
         <button class="ghost" onclick="addBhaSeg()" title="每个支架（每段）中点各一处，串数写 3+3 时就是前后各一个">每段中点插一处</button>
@@ -484,6 +485,7 @@ HTML = r"""<!doctype html>
           <tbody id="bhaBody"></tbody>
         </table>
       </div>
+      </details>
     </div>
     <div class="row" id="batchRow" style="display:none;flex-direction:column;align-items:stretch">
       <div class="row" style="margin-top:0">
@@ -523,10 +525,8 @@ HTML = r"""<!doctype html>
     <div class="row" id="sheetRow" style="display:none">
       <label>每行放</label><input type="number" id="sheetc" value="2" min="1" max="20" step="1" style="width:60px"
         title="拼成一张图纸时每行放几张；连着画到 CAD 时也按这个数——同一列先从上往下排这么多张，排满了往右挪一列">
-      <label>图间距 X</label><input type="number" id="sheetgx" value="300" step="50" style="width:80px"
-        title="图与图之间的左右净空（拼图排格子、连着画到 CAD 都用它）">
-      <label>图间距 Y</label><input type="number" id="sheetgy" value="300" step="50" style="width:80px"
-        title="图与图之间的上下净空（拼图排格子、连着画到 CAD 都用它）">
+      <!-- 图间距 X/Y 收起来了：用固定默认值（GAP_SHEET），界面上不再显示（用户口径：
+           画到 CAD 里几张图挨近一点就行，这个值不用每张都调） -->
       <label>排法</label><select id="sheetorder" style="max-width:260px">
         <option value="row">先横后竖（左→右，然后下一行）</option>
         <option value="col">先竖后横（上→下，然后下一列）</option>
@@ -1045,6 +1045,7 @@ function applyPolarityNear(){
   set('mod1',b.f); set('mod2',b.m); set('mod3',b.l);
 }
 // 阵列模式的一组公共参数（阵列模式与批量模式共用；批量模式每行再覆盖串数/板数）
+const GAP_SHEET=60;           // 图与图之间的净空（界面上不再显示，固定用这个值）
 function arrayCommon(){
   applyPolarityNear();          // 生成前再对齐一次，保证和“组件朝向”一致
   return {harness:chain, gap:parseFloat(v('gap',40))||40,
@@ -1077,8 +1078,9 @@ function arrayCommon(){
           allow_enlarge:ck('enlarge'),
           // 连着画到 CAD 时的落点：一列几张 + 图间距（拼图排格子也用这几个数）
           cols:parseInt(v('sheetc',2))||2,
-          gap_sheet_x:parseFloat(v('sheetgx',300))||0,
-          gap_sheet_y:parseFloat(v('sheetgy',300))||0,
+          // 图间距不再在界面上调：固定用 GAP_SHEET（几张图挨着排就行）
+          gap_sheet_x:GAP_SHEET,
+          gap_sheet_y:GAP_SHEET,
           bha:bhaPayload()};
 }
 // 方案的生成逻辑逐个补；现在只有“串的排法”按方案自动定：
@@ -1252,8 +1254,8 @@ async function genBatch(){
   body.frame=frame0;
   body.rows=(rowsDom.length?rowsDom:batchRows);
   body.cols=parseInt(v('sheetc',2))||2;
-  body.gap_sheet_x=parseFloat(v('sheetgx',300))||0;
-  body.gap_sheet_y=parseFloat(v('sheetgy',300))||0;
+  body.gap_sheet_x=GAP_SHEET;      // 界面不再显示，用固定默认
+  body.gap_sheet_y=GAP_SHEET;
   body.order=(document.getElementById('sheetorder')||{}).value||'row';
   body.separate=!((document.getElementById('bsheet')||{}).checked);   // 默认：一行一张、各自出 DXF
   body.to_cad=document.getElementById('tocad').checked;
@@ -1427,8 +1429,8 @@ def place_opts(req):
             return d
 
     return {"place_per_col": max(1, cols),
-            "place_gap": (f(req.get("gap_sheet_x"), 300.0),
-                          f(req.get("gap_sheet_y"), 300.0))}
+            "place_gap": (f(req.get("gap_sheet_x"), 60.0),
+                          f(req.get("gap_sheet_y"), 60.0))}
 
 
 def array_spec(req, over=None):
@@ -1923,7 +1925,7 @@ class Handler(BaseHTTPRequestHandler):
 
         text, log, wires, names = wr.build_multi_frame(
             items, cols=req.get("cols", 2),
-            gap_x=req.get("gap_sheet_x", 300), gap_y=req.get("gap_sheet_y", 300),
+            gap_x=req.get("gap_sheet_x", 60), gap_y=req.get("gap_sheet_y", 60),
             order=req.get("order", "row"), log=box["log"], progress=pg)
         box["log"] = log
         if not text:

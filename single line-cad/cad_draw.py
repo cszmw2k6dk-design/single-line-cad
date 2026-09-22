@@ -304,6 +304,46 @@ def prim_style(p):
 MAX_NEST = 6           # 块里再套块的最深层数（防自引用/异常文件把递归跑飞）
 
 
+def blk_fingerprint(recs):
+    """一份块定义的内容指纹（用来判断“图里这个块和这次要画的一不一样”）。
+
+    为什么需要它：画到 CAD 慢，慢在**每次都要把几十个块定义清空重画**（Male$4
+    这种一个块就 1300 多个图元）。内容和上次一模一样时根本不用重建 —— 存一份
+    指纹在 DWG 旁边，指纹没变就跳过。
+    """
+    try:
+        import hashlib
+        h = hashlib.sha1()
+        for rec in recs or ():
+            h.update(repr(rec).encode("utf-8", "replace"))
+        return h.hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def block_fp_path(dwg_path):
+    return os.path.splitext(os.path.abspath(dwg_path))[0] + ".blocks.json"
+
+
+def load_block_fp(dwg_path):
+    try:
+        import json
+        with open(block_fp_path(dwg_path), encoding="utf-8") as f:
+            st = json.load(f)
+        return st if isinstance(st, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_block_fp(dwg_path, st):
+    try:
+        import json
+        with open(block_fp_path(dwg_path), "w", encoding="utf-8") as f:
+            json.dump(st or {}, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
 def refill_block(doc, name, recs, bmap, log, depth=0):
     """把一个已经存在的块定义**清空重画**（不删块定义本身）。
 
@@ -424,7 +464,8 @@ def draw_block_body(space, recs, bmap, doc, log, depth=0, parent=""):
     return n
 
 
-def ensure_block(doc, name, bmap, log, refresh=True, depth=0):
+def ensure_block(doc, name, bmap, log, refresh=True, depth=0, fp=None,
+                 verified=None):
     """目标图里没有这个块，就现造一个（**保留嵌套块结构**）。返回 (是否可用, 画了几个图元)。
 
     refresh=True（画到 CAD 的默认）：图里已经有同名块时**删掉重建**。
@@ -459,12 +500,23 @@ def ensure_block(doc, name, bmap, log, refresh=True, depth=0):
     for x in recs:
         if x and (wr._g1(x, "8") or ""):
             lays.add(wr._g1(x, "8"))
+    _my_fp = blk_fingerprint(recs)
     if has_block(doc, name):
+        # 内容指纹没变（这张图上一次就是这么画的）→ 什么都不用做，直接跳过。
+        # 这是“画到 CAD 很慢”的主因：以前每张图都要把几十个块定义清空重画。
+        if fp is not None and _my_fp and fp.get(name) == _my_fp:
+            if verified is not None:
+                verified.add(name)
+            return True, 0
         if refresh and not str(name).startswith("*"):
             # 清空重画（不是删掉重建）：图里已有的引用不会受牵连，内容又保证
             # 和这次的 DXF 一模一样 —— 老版本留下的“点十字”也在这一步被清掉。
             n = refill_block(doc, name, recs, bmap, log, depth)
             if n is not None:
+                if fp is not None and _my_fp:
+                    fp[name] = _my_fp
+                if verified is not None:
+                    verified.add(name)
                 log.append("块 %s 已存在：按这次的图清空重画了 %d 个图元（引用不断）"
                            % (name, n))
                 return True, n
@@ -483,6 +535,10 @@ def ensure_block(doc, name, bmap, log, refresh=True, depth=0):
                     n = draw_block_body(blk, recs, bmap, doc, log, depth, name)
                     n += add_dims(blk, doc, dims_in_records(recs), log)
                     log.append("块 %s 已存在但是空的，补画了 %d 个图元（嵌套块原样搬）" % (name, n))
+                    if fp is not None and _my_fp:
+                        fp[name] = _my_fp
+                    if verified is not None:
+                        verified.add(name)
                     return True, n
             except Exception as ex:
                 log.append("⚠ 检查已有块 %s 失败: %s" % (name, ex))
@@ -497,6 +553,10 @@ def ensure_block(doc, name, bmap, log, refresh=True, depth=0):
     n = draw_block_body(blk, recs, bmap, doc, log, depth, name)
     n += add_dims(blk, doc, dims_in_records(recs), log)   # 块里的线号标注
     log.append("现造块定义 %s（图形来自%s，%d 个图元，嵌套块原样搬）" % (name, src, n))
+    if fp is not None and _my_fp:
+        fp[name] = _my_fp
+    if verified is not None:
+        verified.add(name)
     return True, n
 
 
@@ -547,6 +607,11 @@ def add_dims(space, doc, dims, log, off=None):
                     setattr(d, _attr, _val)
                 except Exception:
                     pass
+            # 尺寸线、尺寸界线都画成蓝色（用户口径）：整条标注实体设颜色 5
+            try:
+                d.color = 5
+            except Exception:
+                pass
             _ok = False
             if txt:
                 try:
@@ -578,7 +643,7 @@ def add_dims(space, doc, dims, log, off=None):
 
 def replay(doc, dxf_path, log, only_blocks=None, only_layers=OUR_LAYERS,
            progress=None, sheet_names=None, refresh_blocks=True, offset=None,
-           no_refresh_blocks=(), fresh=None):
+           no_refresh_blocks=(), fresh=None, block_fp=None):
     """把 dxf_path 里“我们生成的那部分”画进 doc。返回统计。
 
     only_blocks：只回放块名在这里面的 INSERT（外框图自己的块不重画）。
@@ -589,6 +654,8 @@ def replay(doc, dxf_path, log, only_blocks=None, only_layers=OUR_LAYERS,
     no_refresh_blocks：这些块**不删重建**（外框图自带的 Frame1 / SLD_NOTES：
       我们只是照着它的位置再放一份，没道理把界面里的那份删掉重造）。
     fresh：可选，一个 set；这次真（重）建过的块名会写进去（收“点十字”时跳过它们）。
+    block_fp：可选，{块名: 内容指纹}。指纹和图里一致就不再重建那个块（画到 CAD
+      很慢的主因就是这个），画完把新的指纹回填进去。
     """
     def pg(pct, stage):
         if progress:
@@ -649,11 +716,10 @@ def replay(doc, dxf_path, log, only_blocks=None, only_layers=OUR_LAYERS,
                 if nm not in made:
                     ok, np = ensure_block(doc, nm, bmap, log,
                                           refresh=(refresh_blocks
-                                                   and nm.upper() not in _norefresh))
+                                                   and nm.upper() not in _norefresh),
+                                          fp=block_fp, verified=fresh)
                     stat["blk_prim"] += np
                     made.add(nm)
-                    if fresh is not None and ok and np > 0:
-                        fresh.add(nm)
                     if not ok:
                         stat["skip"] += 1
                         continue
@@ -708,8 +774,32 @@ def replay(doc, dxf_path, log, only_blocks=None, only_layers=OUR_LAYERS,
                 txt = (wr._g1(e, "1") or "").strip()
                 if not txt:
                     continue
-                o = ms.AddText(txt, P(wr._gf(e, "10"), wr._gf(e, "20")),
-                               max(wr._gf(e, "40", 2.5), 0.1))
+                # 对齐方式两边不一样，别混：
+                #   TEXT ：72/73 是**对齐方式**，对齐点看 11/21；
+                #   MTEXT：71 是附着点（10/20 就是那个点），**11/21 是方向向量不是位置**。
+                # 以前把 MTEXT 的 11/21 当位置用，文字被挪到 (1,0) 附近 ——
+                # 用户看到的“长度数值丢了”就是这么来的。
+                _x, _y = wr._gf(e, "10"), wr._gf(e, "20")
+                _align = 0
+                if t == "TEXT":
+                    _ha = int(wr._gf(e, "72", 0) or 0)
+                    _va = int(wr._gf(e, "73", 0) or 0)
+                    if _ha or _va:
+                        _x, _y = wr._gf(e, "11", _x), wr._gf(e, "21", _y)
+                        _align = 10 if (_ha == 1 and _va == 2) else (1 if _ha == 1 else 0)
+                else:
+                    _att = int(wr._gf(e, "71", 1) or 1)
+                    if _att == 5:                  # 正中：长度数值就在标注线正上方
+                        _align = 10
+                    elif _att in (2, 8):           # 上中 / 下中
+                        _align = 1
+                o = ms.AddText(txt, P(_x, _y), max(wr._gf(e, "40", 2.5), 0.1))
+                if _align:
+                    try:
+                        o.Alignment = _align       # 10 = 正中，1 = 水平居中
+                        o.TextAlignmentPoint = P(_x, _y)
+                    except Exception:
+                        pass
                 o.Layer = lay
                 stat["TEXT"] += 1
             elif t == "ARC":
@@ -845,8 +935,10 @@ def clear_old_length_labels(doc, log=None):
             lay = ""
         try:
             if nm in ("AcDbText", "AcDbMText"):
-                if lay in ("TEXT",) + tuple(OUR_LAYERS) and looks_like_length(
-                        getattr(e, "TextString", "")):
+                # 只认 **TEXT 层**（链式那版把长度写在这一层）。
+                # 不能按“纯数字文字”去删我们那几层 —— 现在图上标的长度就是数字，
+                # 那样会把这次刚画上去的长度标注一起清掉。
+                if lay in ("TEXT",) and looks_like_length(getattr(e, "TextString", "")):
                     kill.append(e)
             elif "Dimension" in nm:
                 ov = ""
@@ -857,8 +949,9 @@ def clear_old_length_labels(doc, log=None):
                         ov = ""
                     if str(ov).strip():
                         break
-                if lay in LEGACY_LABEL_LAYERS and (not str(ov).strip()
-                                                   or looks_like_length(ov)):
+                # DIM 层上**没写文字**的标注 = 老版本那种“显示量出来长度”的标注；
+                # 现在我们的长度标注都带文字（覆盖值），不会被误删。
+                if lay in LEGACY_LABEL_LAYERS and not str(ov).strip():
                     kill.append(e)
         except Exception:
             continue
@@ -1013,7 +1106,7 @@ def clear_ours(doc, blocks, layers, log=None):
 # 落点记在 DWG 旁边的 .placed.json 里（同一张图跨几次生成 / 关掉窗口再开也接着排）；
 # 图上要是已经没有我们画的东西了（新副本、或者人在 CAD 里删光了），就从头排。
 
-PLACE_GAP = (300.0, 300.0)      # 图与图之间的净空（和界面“图间距 X / Y”一个口径）
+PLACE_GAP = (60.0, 60.0)        # 图与图之间的净空（用户口径：挨近点就行，界面上不再调）
 PLACE_PER_COL = 2               # 一列排几张（界面“每行放”那个格）
 
 
@@ -1233,9 +1326,12 @@ def draw_dxf_into_cad(dxf_path, dwg_path, log=None, use_original=False,
         _blocks = None
         _layers = None
     _fresh = set()
+    # 块定义的内容指纹（存在 DWG 旁边）：指纹没变就不重建，画到 CAD 才快得起来
+    _block_fp = load_block_fp(target)
     stat = replay(doc, dxf_path, log, only_blocks=_blocks, only_layers=_layers, progress=pg,
                   sheet_names=sheet_names, offset=off,
-                  no_refresh_blocks=_norefresh, fresh=_fresh)
+                  no_refresh_blocks=_norefresh, fresh=_fresh, block_fp=_block_fp)
+    save_block_fp(target, _block_fp)
     # 这次（重）建过的块是干净的；剩下那些老块里可能还有“点十字”，收一遍
     purge_point_crosses(doc, ours=lib_block_name_set(only_blocks or ()),
                         skip=_fresh, log=log)
