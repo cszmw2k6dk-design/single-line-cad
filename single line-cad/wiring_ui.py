@@ -489,12 +489,10 @@ HTML = r"""<!doctype html>
     </div>
     <div class="row" id="batchRow" style="display:none;flex-direction:column;align-items:stretch">
       <div class="row" style="margin-top:0">
-        <label>份数</label><input type="number" id="bcount" value="3" min="1" max="60" step="1" style="width:70px">
-        <label>起始串数</label><input type="number" id="bstart" value="3" min="1" step="1" style="width:70px">
-        <label>每张 +</label><input type="number" id="bstep" value="1" step="1" style="width:70px">
+        <!-- 用户口径（2026-09-23）：不要“先填份数再铺行”，像“电机/BHA 位置”那样
+             点“加一处”一行一行加；图号从 SLD-001 起自动往下排。 -->
+        <button class="ghost" onclick="addBatchRow()">加一处</button>
         <label>每串板数</label><input type="number" id="bnper" value="20" min="1" step="1" style="width:80px">
-        <label>起始图号</label><input type="text" id="bno" value="SLD-001" style="width:110px">
-        <button class="ghost" onclick="fillBatch()">按上面参数铺出 N 行</button>
         <button class="ghost" onclick="clearBatch()">清空行</button>
       </div>
       <div style="max-height:130px;overflow:auto;border:1px solid var(--line);border-radius:8px">
@@ -506,8 +504,7 @@ HTML = r"""<!doctype html>
             <th style="text-align:left;padding:6px">每串板数</th>
             <th style="text-align:left;padding:6px">主线线号</th>
             <th style="text-align:left;padding:6px">支线线号</th>
-            <th style="text-align:left;padding:6px">BHA位置</th>
-            <th style="text-align:left;padding:6px">备注</th><th></th>
+            <th></th>
           </tr></thead>
           <tbody id="bBody"></tbody>
         </table>
@@ -519,7 +516,7 @@ HTML = r"""<!doctype html>
           勾了“直接画到 CAD”时：连着画的这些图<b>不清</b>前面的，都留在同一张 DWG 里、
           位置自动错开（同一列先从上往下排，排满了往右挪一列）。
           填完点“下一步：填线束”，在线束页按“生成”一次画完。
-          每行的<b>BHA位置</b>留空 = 沿用“光伏阵列”模式下那张桩表。</span>
+          BHA/电机位置只在上面那张“电机 / BHA 桩位置”里填（各行共用）。</span>
       </div>
     </div>
     <div class="row" id="sheetRow" style="display:none">
@@ -586,12 +583,9 @@ HTML = r"""<!doctype html>
         <option value="">（不指定）</option>
       </select>
       <label>线号标注</label><select id="annot"
-        title="text=普通文字（最稳）；shape=画成标注外观（尺寸线/界线/箭头，普通实体，任何 CAD 都能开）；dim=CAD 原生 DIMENSION（可拖动关联，但 ZWCAD 2025 会判无效）">
-        <option value="text">文字</option>
-        <option value="shape">标注外观（普通实体）</option>
-        <option value="dim">CAD 原生标注(DIMENSION)</option>
+        title="长度标注一律用 CAD 原生 DIMENSION（用户口径 2026-09-23：默认就保留原生标注）">
+        <option value="dim" selected>CAD 原生标注(DIMENSION)</option>
       </select>
-      <label>线束缩放</label><input type="number" id="hscale" value="1" step="0.1" min="0.05">
       <label>块固定间距</label><input type="number" id="fixgap" value="30" step="5"
              title="除“正极支线/负极支线/公头/母头”（这四个按板子接点定位）以外，
                     其余块（FUSE、CU-AL、起始块…）之间统一的固定间距">
@@ -599,7 +593,6 @@ HTML = r"""<!doctype html>
              title="负极行和正极行的净空；负极支线块是竖的，程序会自动把它的身子让出来（行线再往下挪一个块高），不会压住正极行">
       <label><input type="checkbox" id="link"> 画阵列↔线束跨接线</label>
       <label><input type="checkbox" id="hspan" checked> 线束接点对齐缩放</label>
-      <label><input type="checkbox" id="pts"> 画连接点(POINT)</label>
       <label>间隔 GAP</label><input type="number" id="gap" value="40" step="5">
       <label>外框图</label><select id="frame" onchange="onFrameChange()"><option value="">不用</option></select>
       <label><input type="checkbox" id="tocad" title="画进 CAD 里那张外框图上；连着生成几张时不删前面的图，一张一张错开排（同一列先从上往下，排满了往右一列）"> 直接画到 CAD(COM)</label>
@@ -1058,7 +1051,7 @@ function arrayCommon(){
           gap_x:parseFloat(v('gapx',1))||0,
           gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',2))||0)),
           dir:v('dir','right'),
-          harness_scale:parseFloat(v('hscale',1))||1,
+          harness_scale:1,              // 线束缩放不做了（用户口径 2026-09-23：没用就删）
           fixed_gap:parseFloat(v('fixgap',30))||30,
           head_block:String(v('headblk','CBX')||'').trim(),
           head_gap:parseFloat(v('headgap',60))||60,
@@ -1069,12 +1062,12 @@ function arrayCommon(){
           neg_plug:String(v('negplug','Fmale')||'').trim(),
           link_array:ck('link'),
           match_span:ck('hspan',true),
-          draw_points:ck('pts'),        // 默认不画：图里不需要点
+          draw_points:false,            // 连接点一律不画（用户口径 2026-09-23）
           pos_feeder:String(v('posfeed','')||'').trim(),
           neg_feeder:String(v('negfeed','')||'').trim(),
           awg_main:String(v('awgmain','')||'').trim(),
           awg_branch:String(v('awgbranch','')||'').trim(),
-          annot:v('annot','text')||'text',
+          annot:v('annot','dim')||'dim',
           allow_enlarge:ck('enlarge'),
           // 连着画到 CAD 时的落点：一列几张 + 图间距（拼图排格子也用这几个数）
           cols:parseInt(v('sheetc',2))||2,
@@ -1192,6 +1185,14 @@ function fillBatch(){
   renderBatch();
 }
 function clearBatch(){ batchRows=[]; renderBatch(); }
+function addBatchRow(){          // 一行一行加（图号自动从 SLD-001 往下排）
+  const fr=(frameList&&frameList[0])||'';
+  const np=parseInt(v('bnper',20))||20;
+  const used=batchRows.map(r=>String(r.no||''));
+  let n=1; while(used.indexOf('SLD-'+pad3(n))>=0) n++;
+  batchRows.push({no:'SLD-'+pad3(n), frame:fr, n_str:'3', n_per:np});
+  renderBatch();
+}
 function renderBatch(){
   const tb=document.getElementById('bBody'); tb.innerHTML='';
   batchRows.forEach((r,i)=>{
@@ -1217,16 +1218,7 @@ function renderBatch(){
       opts.forEach(w=>{const o=document.createElement('option'); o.value=w; o.textContent=w; s.appendChild(o);});
       s.value=r[key]||''; s.onchange=()=>{r[key]=s.value;}; c.appendChild(s);
     });
-    // 这一张图自己的 BHA 桩/电机位置：留空 = 沿用上面那张表
-    c=td(); e=document.createElement('input'); e.type='text';
-    e.value=r.bha||''; e.placeholder='同上';
-    e.title='写法：整排第几块之后:桩块:电机块:旋转:左净空:右净空（后面的都能省），多处用 ; 隔开；' +
-            '位置按整排连续数（不分串）：4 串 × 20 块填 40 = 正中间；写“每段”=每段中点各一处。' +
-            '例 40:BHA:MOTOR:0（BHA 桩 + 电机；块库里没有 BHA 时自动拿电机块当桩）' +
-            '或 20:MOTOR::0（只放一个电机）。留空 = 沿用上面那张桩表；填了就只按这一行来。';
-    e.style.width='190px'; e.oninput=()=>{r.bha=e.value;}; c.appendChild(e);
-    c=td(); e=document.createElement('input'); e.type='text';
-    e.value=r.note||''; e.style.width='100%'; e.oninput=()=>{r.note=e.value;}; c.appendChild(e);
+    // BHA/电机位置、备注两列去掉了（用户口径 2026-09-23：位置在上面那张桩表里统一填，备注没用）
     c=td(); const b=document.createElement('button'); b.className='ghost'; b.textContent='删';
     b.onclick=()=>{batchRows.splice(i,1);renderBatch();}; c.appendChild(b);
     tb.appendChild(tr);
@@ -1249,7 +1241,7 @@ async function genBatch(){
     const val=function(k){ const cell=c[k]; if(!cell) return '';
       const e=cell.querySelector('input,select'); return e?String(e.value||'').trim():''; };
     return {no:val(0), frame:val(1), n_str:val(2), n_per:val(3),
-            awg_main:val(4), awg_branch:val(5), bha:val(6), note:val(7)};
+            awg_main:val(4), awg_branch:val(5)};
   }).filter(function(r){ return r.n_str||r.no; });
   body.frame=frame0;
   body.rows=(rowsDom.length?rowsDom:batchRows);
@@ -1462,7 +1454,7 @@ def array_spec(req, over=None):
                 neg_feeder=req.get("neg_feeder", ""),
                 awg_main=req.get("awg_main", ""),
                 awg_branch=req.get("awg_branch", ""),
-                annot=req.get("annot", "text"),
+                annot=req.get("annot", "dim"),
                 neg_rotate=req.get("neg_rotate", 0.0),
                 neg_gap=req.get("neg_gap", 30.0),
                 bha=req.get("bha", []),

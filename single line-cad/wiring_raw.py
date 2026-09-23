@@ -378,6 +378,13 @@ def merge_blocks(blocks_body, tables_body, other_paths, next_handle, mspace, log
 def _prims_bbox(prims):
     xs = []; ys = []
     for p in prims:
+        # MLEADER 层是“多行引线”抢救出来的文字/引线：坐标常常在块外很远，
+        # 算包围盒时跳过它，免得把块撑大（排版会跟着跑偏）。
+        _lay = (p[3] if (p[0] == "poly" and len(p) > 3)
+                else p[4] if (p[0] == "circle" and len(p) > 4)
+                else p[5] if len(p) > 5 else "")
+        if str(_lay or "").upper() == "MLEADER":
+            continue
         if p[0] == "poly":
             for x, y in p[1]:
                 xs.append(x); ys.append(y)
@@ -2403,7 +2410,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
     # IBEX 就是“Harness + CU-AI 转接”，所以 Harness 那套（自动加保险丝等）对它一样生效
     _is_harness = ("HARNESS" in scheme.upper()) or _is_ibex
     fuse_blk = (spec.get("fuse_block") or "FUSE").strip()
-    fuse_gap = _n("fuse_gap", 20.0)
+    fuse_gap = _n("fuse_gap", 50.0)      # 用户口径（2026-09-23）：fuse 与相邻块距离默认 50
     # IBEX 方案：支线线束段里自动加 CU-AI 转接（间距 50，用户口径 2026-09-22）
     cual_blk = (spec.get("cual_block") or "CU-AI").strip()
     cual_gap = _n("cual_gap", 50.0)
@@ -2838,7 +2845,12 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 Harness 方案里保险丝用 fuse_gap（默认 20）：用户口径是
                 “fuse 和靠近的那个块的距离保持 20”；其余块仍旧是界面的“块固定间距”。
                 """
-                if _is_harness and _squash(hinsts[_i]["name"]) == _squash(fuse_blk):
+                # fuse：**两侧都按 fuse_gap 走**（用户口径：以 fuse 的距离为优先级，
+                # 不能被“块固定间距”盖掉）。所以看这一块和它前一块。
+                if _is_harness and (
+                        _squash(hinsts[_i]["name"]) == _squash(fuse_blk)
+                        or (_i > 0
+                            and _squash(hinsts[_i - 1]["name"]) == _squash(fuse_blk))):
                     return fuse_gap
                 # IBEX 的 CU-AI 转接：和相邻块、以及两个转接彼此之间都是 cual_gap(50)
                 if _is_ibex and cual_blk and (
@@ -2942,6 +2954,10 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 # 正极支线 + 末端公头都算“正极那一路”：第 k 个钉在第 k 串出线点的正下方
                 elif it["name"] in pos_names and kp < len(px) and l:
                     pxx = px[kp] - l[0][0]; kp += 1
+                    # 支线是钉在板子端子上的，但头部那一行（CBX→FUSE→…）是按间距往右排的，
+                    # 排过来可能**压在第一根支线身上**（用户反馈：正极出线头附近 fuse 和
+                    # 正极支线重叠）。这里量一下：不够就把整个头部行往左顶开，
+                    # 支线位置不动（它必须钉在板子端子上）。
                 elif it["name"] in neg_names and neg_from is None and kn < len(nx) and r:
                     pxx = nx[kn] - r[0][0]; kn += 1
                 elif head_blk and it["name"] == head_blk:
@@ -3020,6 +3036,32 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             if kp < n_str and not pos_plug:
                 log.append("⚠ 正极支线只有 %d 根、串数 %d：多出来的串没有正极支线"
                            "（把末端公头块填上，它顶一根）" % (kp, n_str))
+            # 收尾：头部那一行（第一根支线之前的块）与第一根支线之间的间距**顶准**。
+            # 支线钉在板子端子上不能动，所以把头部行整条平移：头一行最后一块的右端
+            # 到第一根支线左端，正好留 fuse 间距（用户口径：这个距离要准，不能过大/重叠）。
+            if head_blk and 0 < first_feed < len(places):
+                _hp = places[:first_feed]
+                _fp = places[first_feed]
+                try:
+                    _hright = max(p["P"][0] + p["bb"][1] * p["s"] for p in _hp)
+                    _fleft = _fp["P"][0] + _fp["bb"][0] * _fp["s"]
+                    _fq = _squash(fuse_blk) if fuse_blk else ""
+                    _near_fuse = _is_harness and _fq and (
+                        _squash(_hp[-1]["name"]) == _fq or _squash(_fp["name"]) == _fq)
+                    _gap_want = fuse_gap if _near_fuse else fix_gap
+                    _dx = (_hright + _gap_want) - _fleft
+                    if abs(_dx) > 0.01:
+                        for _p in _hp:
+                            _p["P"] = (_p["P"][0] - _dx, _p["P"][1])
+                            _p["outs"] = [(x - _dx, y) for x, y in _p["outs"]]
+                            _p["lins"] = [(x - _dx, y) for x, y in _p["lins"]]
+                            _p["right"] -= _dx
+                        if head_x0 is not None:
+                            head_x0 -= _dx
+                        log.append("头部行与第一根支线的间距校正 %.1f → %.0f"
+                                   % (_dx + _gap_want, _gap_want))
+                except Exception:
+                    pass
             # 负极支线的根数：自动补齐时 = 负极行里钉在板子上的块数（头部的接头不算）
             _n_neg = ((len(hinsts) - neg_from - 1) if neg_from is not None else kn)
             if neg_feed and _n_neg < n_str and not neg_plug:
@@ -3062,6 +3104,11 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                        max(box[1], hp[i]["P"][0] + b0[1] * s0),
                        min(box[2], hp[i]["y0"] + b0[2] * s0),
                        max(box[3], hp[i]["y0"] + b0[3] * s0))
+            # 标注也要留在内框里：长度标注在线束上方、红色总长在下方，
+            # 以前算内容框只按块算，标注常常顶出内框（用户反馈“图超过内框”）。
+            # 上下各留一段（单位空间），出图缩放 k 就会把它们一起算进去。
+            _ann_pad = 26.0
+            box = (box[0], box[1], box[2] - _ann_pad, box[3] + _ann_pad)
             return {"cells": cells, "modmap": modmap, "abox": abox, "hoff": hoff,
                     "box": box, "hp": hp}
 
@@ -3094,8 +3141,10 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                                             mw + gap_x, gap_x, gap_y, dirn,
                                             groups=[_g], group_gap=None)
                     _arr[_g] = _b3[1] - _b3[0]
-                _extra = max(0.0, (L["box"][1] - L["box"][0]) - _arr[n_str])
-                _ws = {_g: _arr[_g] + _extra for _g in _arr}
+                # 段与段之间要的是**阵列之间的跨支架距离**（用户口径 2026-09-23：
+                # 填 30 就该量出 30）。以前这里把“线束/起始块那些外伸量”也加进每段宽度，
+                # 于是两段阵列之间凭空多出一大截（填 30 量出 100 多）。
+                _ws = {_g: _arr[_g] for _g in _arr}
                 _tot = sum(_ws[_g] for _g in _seg_sizes) + brk_gap * (_nseg - 1)
                 _av_w = (fbx[1] - fbx[0]) * (1 - 2 * inset_x)
                 _av_h = (fbx[3] - fbx[2]) * (1 - 2 * inset_y)
@@ -3137,20 +3186,11 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                                "请减少串数/板数，或换更大的框"
                                % ("+".join(str(x) for x in _seg_sizes), n_per, k))
                 elif k < k_floor:
-                    gx_min, gy_min = mw * 0.15, mh * 0.15
-                    if gap_x > gx_min + 1e-9 or gap_y > gy_min + 1e-9:
-                        log.append("k=%.3f 偏小，按 13.7 先把间距压到下限再算一次" % k)
-                        gap_x, gap_y = min(gap_x, gx_min), min(gap_y, gy_min)
-                        if not _gy_indep:
-                            gap_y = gap_x          # 串间跟板间保持一致
-                        L = layout(gap_x, gap_y)
-                        cw = L["box"][1] - L["box"][0]
-                        ch = L["box"][3] - L["box"][2]
-                        k = min(av_w / cw, av_h / ch)
-                        if not allow_up:
-                            k = min(k, 1.0)
-                        log.append("压缩间距后: 板间净空 %.1f 串间净空 %.1f，k=%.4f" %
-                                   (gap_x, gap_y, k))
+                    # 用户口径（2026-09-23）：装不下时**只用整体缩放**（k）解决，
+                    # 不许为了塞进框去压缩间距 —— 压缩间距会让块贴到一起、
+                    # 尺寸也不是你填的值了。所以这里不再改 gap，只报一句。
+                    log.append("k=%.3f 偏小：按你填的间距等比缩到能放下；"
+                               "要更清楚就减少串数/板数，或换更大的框" % k)
                     if k < k_floor:
                         log.append("⚠ 装不进当前外框：%d 串 x %d 块（k<%.2f）在可用区里最多约 "
                                    "%d 串 x %d 块，请减少串数/板数，或换更大的框"
@@ -3191,19 +3231,27 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
         _stag = 0.0
         if _nseg > 1:
             # 分段（x+y 支架）时，后一段的线束整体再往下让开多少。
-            # 用户口径（2026-09-22）：y 类型那一段的线束要往下移到**正极支线不和
-            # 前一段 x 支架的正负极线束部分重合** —— 2.6 倍模块高不够，抬到 3.8 倍
-            # （一套线束 + 下面那行负极支线 + 标注都在里面了）。
-            _stag = mh * k * 3.8
+            # 用户口径（2026-09-23：“y 的线束还要再往下移，现在错开不完全”）：
+            # 按**线束块自己的高度**算，而不是模块高度 —— 支线块比组件块高得多。
+            # 一套线束 = 正极行 + 负极行，所以按块高 ×2.6 留（含负极行与标注）。
+            _hh = 0.0
+            try:
+                for _it in hinsts:
+                    _b = cl.bbox(_it["prims"])
+                    _hh = max(_hh, _b[3] - _b[2])
+            except Exception:
+                pass
+            _stag = max(mh, _hh) * k * 2.6
 
         th = max(0.5, label_r * (fbx[3] - fbx[2])) if fbx else 1.0
         # ---- 线号标注形式：CAD 原生线性标注（默认） / 老式 TEXT ----
         _dim_style = dim_style_name(sec)
         # 默认走**文字标注**：ZWCAD 2025 目前对本程序生成的 DIMENSION 会报
         # “无效或不完整的 DXF 输入 —— 图形被放弃”，等原生标注那条路验完再打开。
-        _annot = (spec.get("annot") or "text").strip().lower()
+        # 默认就是**原生标注**（用户口径 2026-09-23：标注默认保留原生 DIMENSION）
+        _annot = (spec.get("annot") or "dim").strip().lower()
         if _annot not in ("text", "shape", "dim"):
-            _annot = "text"
+            _annot = "dim"
         _dim_ok = (_annot != "text") and bool(_dim_style)
         dim_jobs = []           # [(块名, 块内容实体)]
         dim_reqs = []           # [(a, b, anchor, txt)] —— 并入失败时退回文字用
@@ -3440,8 +3488,13 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             yy = hp.get("y0", hp["P"][1] + L["hoff"][1])
             P = FH((hp["P"][0] + L["hoff"][0], yy))    # 线束：分段时逐段下移错开
             emit_insert_rot(it["name"], P[0], P[1], sc, hp.get("rot", 0.0))
-            # 块里 CONN-Label 层的点 = 这个块指定的“标注落点”，换算到图纸坐标备用
-            labs = [(x * sc + P[0], y * sc + P[1])
+            # 块里 CONN-Label 层的点 = 这个块指定的“标注落点”，换算到图纸坐标备用。
+            # **必须跟着块一起转**：负极那一行的块是旋转过的（接线头对准板子负极），
+            # 以前这里只缩放+平移、没转，于是“负极出线头的标注点”落到了块的另一头
+            # （用户反馈的那个问题）。
+            _rot = math.radians(float(hp.get("rot", 0.0) or 0.0))
+            _ca, _sa = math.cos(_rot), math.sin(_rot)
+            labs = [((x * _ca - y * _sa) * sc + P[0], (x * _sa + y * _ca) * sc + P[1])
                     for x, y, ly in _conn_points(bmap.get(it["name"], []), bmap)
                     if "LABEL" in (ly or "").upper()]
             hfinal.append({"name": it["name"], "P": P, "s": sc,
@@ -3508,7 +3561,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
         lab_queue = []
 
         def label_near(a, b, cands, txt, side=None, length=None, row=0, y_ref=None,
-                       text_on=None):
+                       text_on=None, length_txt=None):
             """排一条标注：长度标注（水平、同一行统一高度）+ 线号文字（单独贴导线旁）。
 
             row：0 = 正极那一行，1 = 负极那一行（**按行各自统一高度**，用户口径）。
@@ -3516,11 +3569,13 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             a/b：尺寸界线的两个原点。跨接线要给**真正的出线头**——板子那一头的出线点
                  + 支线块顶端；text_on 是线号文字要贴的那一段（跨接线传折线中间那段，
                  文字才落在导线上）。
+            length_txt：直接写死标注文字（比如 fuse 那一段按图纸口径写 “1FT”，
+                 不按量出来的长度写）。
             """
             lab_queue.append((a, b, list(cands or []), wire_label(txt),
                               (float(length) if length else None), int(row),
                               (float(y_ref) if y_ref is not None else None),
-                              text_on))
+                              text_on, (str(length_txt) if length_txt else None)))
 
         for idx in range(1, len(hinsts)):
             if head_blk and (hinsts[idx - 1]["name"] == head_blk or hinsts[idx]["name"] == head_blk):
@@ -3552,10 +3607,14 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                     first_len = d
             # 一对块只打一个标注（一对块之间常常有 2 根线，逐根打会叠在一起）
             if first:
+                # fuse 那一段按图纸口径写 “1FT”（不按一比一量出来的长度写）
+                _lt = ("1FT" if (_is_harness and fuse_blk
+                                 and (_squash(_a) == _squash(fuse_blk)
+                                      or _squash(_b) == _squash(fuse_blk))) else None)
                 label_near(first[0], first[1],
                            (hfinal[idx - 1].get("labs") or []) + (hfinal[idx].get("labs") or []),
                            _txt, length=first_len, row=(1 if _is_neg else 0),
-                           y_ref=(first[0][1] + first[1][1]) / 2.0)
+                           y_ref=(first[0][1] + first[1][1]) / 2.0, length_txt=_lt)
 
         # ---- 跨接线（默认不画：正极支线不接板子） ----
         feeds = [h for h in hfinal if h["name"] in pos_names] if pos_names else []
@@ -3646,7 +3705,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
         # 统一标注高度（用户口径 2026-09-22）：**正极那行的标注一个高度、负极那行一个高度**，
         # 而且贴着各自那条行线（“不要太高的，不遮挡线号就行”——线号就在行线上方一点）。
         _row_ys = {0: [], 1: [], 2: []}
-        for (_a, _b, _c, _t, _L, _r, _y, _to) in lab_queue:
+        for (_a, _b, _c, _t, _L, _r, _y, _to, _lt) in lab_queue:
             if _y is not None:
                 _row_ys.setdefault(_r, []).append(_y)
         y_lab_of = {}
@@ -3690,9 +3749,9 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 nx, ny = -nx, -ny
             return ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, nx, ny)
 
-        for (a, b, cands, awg, length, row, _y_ref, text_on) in lab_queue:
+        for (a, b, cands, awg, length, row, _y_ref, text_on, length_txt) in lab_queue:
             o1, o2 = _lab_origins(a, b, cands)
-            txt = ("%.1f" % length) if length else ""
+            txt = length_txt if length_txt else (("%.1f" % length) if length else "")
             y_lab = y_lab_of.get(row, y_lab_of[0])
             ents, g = dim_geom_h(o1, o2, y_lab, txt, _dim_th, _dim_asz, _dim_col)
             if g:
@@ -3730,6 +3789,43 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                             _cy = _c
                             break
                     emit_label(_cx, _cy, awg, h=_lab_th, center=True)
+
+        # ---- 总长标注（红色）：一条线束从第一个块的 CONN-Label 到最后一个块的
+        # CONN-Label，放在线束的**正下方**，离行线的距离和蓝色标注一样（镜像）。
+        # 用户口径（2026-09-23）：所有颜色都用红色。
+        _n_total = 0
+        _rows_tot = []
+        if neg_from is not None and 0 < neg_from < len(hfinal):
+            _rows_tot.append((0, 0, neg_from))            # 正极行
+            _rows_tot.append((1, neg_from, len(hfinal)))  # 负极行
+        else:
+            _rows_tot.append((0, 0, len(hfinal)))
+        for _row, _i0, _i1 in _rows_tot:
+            _seg = hfinal[_i0:_i1]
+            # 首/末块取**有 CONN-Label 的**那两块：CBX 这类起始块上没有 CONN-Label，
+            # 直接拿第一块会取不到点（正极行就是这么被跳过的）。
+            _seg = [x for x in _seg if (x.get("labs") or [])]
+            if len(_seg) < 2:
+                continue
+            o1, o2 = _seg[0]["labs"][0], _seg[-1]["labs"][-1]
+            if abs(o2[0] - o1[0]) < 1e-6:
+                continue
+            _ys = _row_ys.get(_row) or []
+            if not _ys:
+                continue
+            _ys = sorted(_ys)
+            _y_row = _ys[len(_ys) // 2]
+            _off_row = max(y_lab_of.get(_row, _y_row) - _y_row, _lab_th)
+            _txt_tot = "%.1f" % math.hypot(o2[0] - o1[0], o2[1] - o1[1])
+            _ents, _g = dim_geom_h(o1, o2, _y_row - _off_row, _txt_tot,
+                                   _dim_th, _dim_asz, 1)      # 1 = 红色
+            if _g:
+                emit_shape_ents(_ents)
+                _n_total += 1
+        if _n_total:
+            log.append("总长标注：%d 条（红色，取每一条线束首/末块的 CONN-Label，"
+                       "放在线束正下方、离行线距离与蓝色标注一致）" % _n_total)
+
         if lab_queue:
             log.append("长度标注：%d 个（水平；正极行 y=%.0f、负极行 y=%.0f、跨接线 y=%.0f 各自统一，"
                        "界线=CONN-Label 点；箭头 %.0f、文字高 %.0f、蓝色）；"
@@ -4469,6 +4565,49 @@ def _prim_list(records, blocks, mtx, depth, out):
             out.append(("poly", _tf(_ellipse_pts(rec), mtx), True, lay, col))
         elif t == "HATCH":
             out.append(("poly", _tf(_hatch_points(rec), mtx), False, lay, col))
+        elif t == "MULTILEADER":
+            # 多行引线（CBX 块上的 “Combiner Box” 就在它里面）：以前整类没处理，
+            # 块里的文字和引线整个丢了（用户反馈的“CBX 块文字丢失”）。
+            # 引线顶点画成一条线、文字画成 TEXT；这类引线的坐标常常跑到块外很远，
+            # 所以统一挂在 MLEADER 层上，算包围盒时跳过（见 _prims_bbox），
+            # 免得把块撑大、把排版带偏。
+            verts, txt, tpos, th_m = [], "", None, 0.0
+            _pend = None
+            for c, v in rec:
+                try:
+                    if c == "10":
+                        _pend = [float(v), None]
+                    elif c == "20" and _pend:
+                        _pend[1] = float(v)
+                        verts.append(_apply(mtx, _pend[0], _pend[1])[:2])
+                        _pend = None
+                    elif c == "12":
+                        tpos = [float(v), None]
+                    elif c == "22" and tpos:
+                        tpos[1] = float(v)
+                    elif c == "304" and v and not str(v).strip().endswith("{"):
+                        if len(str(v)) > len(txt):
+                            txt = str(v)
+                    elif c == "41" and th_m == 0.0:
+                        # 41 = 引线文字的“字高”（后面还会出现引线自己的 41，别被它改小）
+                        th_m = abs(float(v))
+                except (TypeError, ValueError):
+                    continue
+            base = _prims_bbox(out) or (0.0, 0.0, 0.0, 0.0)
+            _lim = max(base[1] - base[0], base[3] - base[2], 1.0) * 3.0
+            _cx, _cy = (base[0] + base[1]) / 2.0, (base[2] + base[3]) / 2.0
+            keep = [p for p in verts if math.hypot(p[0] - _cx, p[1] - _cy) <= _lim]
+            if len(keep) >= 2:
+                out.append(("poly", keep, False, "MLEADER", col))
+            if txt:
+                if tpos is None or tpos[1] is None:
+                    tpos = keep[0] if keep else (0.0, 0.0)
+                _tx, _ty = _apply(mtx, tpos[0], tpos[1])[:2]
+                # 字高别超过块本身的三分之一（引线自带的字高常常是给原图比例写的）
+                _bh = max(base[1] - base[0], base[3] - base[2], 1.0)
+                out.append(("text", _tx, _ty, txt,
+                            max(0.5, min(th_m or _bh * 0.3, _bh * 0.35)),
+                            "MLEADER", col))
         elif t == "POINT":
             x, y = _apply(mtx, _gf(rec, "10"), _gf(rec, "20"))
             out.append(("poly", [(x - 1, y), (x + 1, y)], False, lay, col))

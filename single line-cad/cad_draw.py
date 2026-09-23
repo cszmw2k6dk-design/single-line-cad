@@ -500,6 +500,7 @@ def ensure_block(doc, name, bmap, log, refresh=True, depth=0, fp=None,
     for x in recs:
         if x and (wr._g1(x, "8") or ""):
             lays.add(wr._g1(x, "8"))
+    lays.add("MLEADER")     # 多行引线抢救出来的文字/引线挂在这一层（见 wiring_raw._prim_list）
     _my_fp = blk_fingerprint(recs)
     if has_block(doc, name):
         # 内容指纹没变（这张图上一次就是这么画的）→ 什么都不用做，直接跳过。
@@ -601,7 +602,7 @@ def add_dims(space, doc, dims, log, off=None):
                     break
                 except Exception:
                     pass
-            for _attr, _val in (("TextHeight", 8.0), ("TextGap", 0.1),
+            for _attr, _val in (("TextHeight", 7.0), ("TextGap", 0.1),
                                 ("TextStyle", "Voltage"), ("TextColor", 5)):
                 try:
                     setattr(d, _attr, _val)
@@ -625,9 +626,10 @@ def add_dims(space, doc, dims, log, off=None):
                     o.Layer = "WIRE_LABEL"
                 except Exception:
                     pass
+            # 箭头大小固定 3（用户口径）—— 以前这里是“小于 3 才兜底改成 6.6”，
+            # 结果每次都把箭头放大到 6.6，用户看到的箭头一直没变。
             try:
-                if float(d.ArrowheadSize) < 3.0:
-                    d.ArrowheadSize = 6.6
+                d.ArrowheadSize = 3.0
             except Exception:
                 pass
             ensure_layer(doc, "DIM")
