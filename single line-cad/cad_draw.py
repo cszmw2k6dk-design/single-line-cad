@@ -578,7 +578,8 @@ def dims_in_records(recs):
                     (wr._gf(e, "14"), wr._gf(e, "24")),
                     (wr._gf(e, "10"), wr._gf(e, "20")),
                     (wr._gf(e, "11"), wr._gf(e, "21")),
-                    (wr._g1(e, "1") or "").strip()))
+                    (wr._g1(e, "1") or "").strip(),
+                    int(wr._gf(e, "62", 0) or 0)))     # 颜色（总长标注是红色 1）
     return out
 
 
@@ -590,7 +591,9 @@ def add_dims(space, doc, dims, log, off=None):
     off：连续画图时这张图的错开量（标注落点跟着一起挪）。
     """
     n = 0
-    for (o1, o2, dpos, tpos, txt) in dims:
+    for (_d) in dims:
+        o1, o2, dpos, tpos, txt = _d[:5]
+        _col = _d[5] if len(_d) > 5 else 5        # 默认蓝色；总长标注传 1 = 红色
         try:
             d = space.AddDimAligned(pt(*off_xy(o1[0], o1[1], off)),
                                     pt(*off_xy(o2[0], o2[1], off)),
@@ -603,14 +606,14 @@ def add_dims(space, doc, dims, log, off=None):
                 except Exception:
                     pass
             for _attr, _val in (("TextHeight", 7.0), ("TextGap", 0.1),
-                                ("TextStyle", "Voltage"), ("TextColor", 5)):
+                                ("TextStyle", "Voltage"), ("TextColor", _col)):
                 try:
                     setattr(d, _attr, _val)
                 except Exception:
                     pass
             # 尺寸线、尺寸界线都画成蓝色（用户口径）：整条标注实体设颜色 5
             try:
-                d.color = 5
+                d.color = _col if _col else 5
             except Exception:
                 pass
             _ok = False

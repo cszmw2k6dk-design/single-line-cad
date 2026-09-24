@@ -659,7 +659,7 @@ def dim_geom_h(o1, o2, y_line, txt, th, asz, color=5):
                   "o1": o1, "o2": o2, "asz": asz}
 
 
-def dim_entity_pairs_h(name, style, o1, o2, y_line, txt, g, th):
+def dim_entity_pairs_h(name, style, o1, o2, y_line, txt, g, th, color=0):
     """水平长度标注的 DIMENSION 实体（用“对齐标注”，两端点取 CONN-Label 点）。
 
     ZWCAD/AutoCAD 的线性标注就是这么存的：13/23、14/24 是两条尺寸界线的原点，
@@ -667,7 +667,10 @@ def dim_entity_pairs_h(name, style, o1, o2, y_line, txt, g, th):
     """
     x1, x2 = g["x1"], g["x2"]
     mx = (x1 + x2) / 2.0
-    return [("0", "DIMENSION"), ("100", "AcDbEntity"), ("8", "WIRE_LABEL"),
+    out = [("0", "DIMENSION"), ("100", "AcDbEntity"), ("8", "WIRE_LABEL")]
+    if color:
+        out.append(("62", str(int(color))))
+    out += [
             ("100", "AcDbDimension"), ("280", "0"),
             ("2", name),
             ("10", "%.6f" % mx), ("20", "%.6f" % y_line), ("30", "0.0"),
@@ -686,6 +689,7 @@ def dim_entity_pairs_h(name, style, o1, o2, y_line, txt, g, th):
             ("1070", "140"), ("1040", "%.4f" % th),
             ("1070", "41"), ("1040", "%.4f" % g["asz"]),
             ("1002", "}")]
+    return out
 
 
 def dim_entity_pairs(name, style, a, b, anchor, txt, g, th):
@@ -2410,7 +2414,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
     # IBEX 就是“Harness + CU-AI 转接”，所以 Harness 那套（自动加保险丝等）对它一样生效
     _is_harness = ("HARNESS" in scheme.upper()) or _is_ibex
     fuse_blk = (spec.get("fuse_block") or "FUSE").strip()
-    fuse_gap = _n("fuse_gap", 50.0)      # 用户口径（2026-09-23）：fuse 与相邻块距离默认 50
+    fuse_gap = _n("fuse_gap", 35.0)      # 用户口径（2026-09-24）：fuse 与相邻块距离默认 35
     # IBEX 方案：支线线束段里自动加 CU-AI 转接（间距 50，用户口径 2026-09-22）
     cual_blk = (spec.get("cual_block") or "CU-AI").strip()
     cual_gap = _n("cual_gap", 50.0)
@@ -3098,8 +3102,11 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             # 起始块：横向在阵列左边固定距离、纵向对齐阵列那一行的中线
             for i in head_i:
                 b0 = hp[i]["bb"]; s0 = hp[i]["s"]
-                # 单位空间里“阵列那一行”的中线就是 y=0，所以这里不减 hoff（它不跟着下移）
-                hp[i]["y0"] = -(b0[2] + b0[3]) / 2.0 * s0
+                # 起始块（CBX）对齐**整片阵列的中线**（用户口径 2026-09-24）。
+                # 以前是按“阵列第一行”的中线（单位空间 y=0）对，多串（多行）时
+                # 看着就比整片阵列偏上。
+                _arr_cy = (abox[2] + abox[3]) / 2.0
+                hp[i]["y0"] = _arr_cy - (b0[2] + b0[3]) / 2.0 * s0
                 box = (min(box[0], hp[i]["P"][0] + b0[0] * s0),
                        max(box[1], hp[i]["P"][0] + b0[1] * s0),
                        min(box[2], hp[i]["y0"] + b0[2] * s0),
@@ -3107,7 +3114,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             # 标注也要留在内框里：长度标注在线束上方、红色总长在下方，
             # 以前算内容框只按块算，标注常常顶出内框（用户反馈“图超过内框”）。
             # 上下各留一段（单位空间），出图缩放 k 就会把它们一起算进去。
-            _ann_pad = 26.0
+            _ann_pad = 40.0
             box = (box[0], box[1], box[2] - _ann_pad, box[3] + _ann_pad)
             return {"cells": cells, "modmap": modmap, "abox": abox, "hoff": hoff,
                     "box": box, "hp": hp}
@@ -3407,7 +3414,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             _n_shape[0] += 1
             return True
 
-        def emit_dim_h(o1, o2, y_line, txt, ents, g, th_dim):
+        def emit_dim_h(o1, o2, y_line, txt, ents, g, th_dim, color=0):
             """注册一个**水平长度标注**（CAD 原生 DIMENSION），和 emit_dim 一套收尾流程。"""
             if not _dim_ok:
                 return False
@@ -3417,7 +3424,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             dim_jobs.append((temp, final, ents))
             dim_reqs.append((o1, o2, (o1[0], y_line), txt))
             dim_ent_pairs.append(dim_entity_pairs_h(final, _dim_style, o1, o2,
-                                                     y_line, txt, g, th_dim))
+                                                     y_line, txt, g, th_dim, color))
             return True
 
         def emit_annot(a, b, anchor, txt):
@@ -3486,7 +3493,10 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             hp = L["hp"][idx]
             sc = hp["s"] * k
             yy = hp.get("y0", hp["P"][1] + L["hoff"][1])
-            P = FH((hp["P"][0] + L["hoff"][0], yy))    # 线束：分段时逐段下移错开
+            # 线束落点：分段时逐段下移错开 —— **正极行和负极行一起移**
+            # （用户口径 2026-09-24：“正极负极同时往下移”），两行的相对关系不变，
+            # 所以“出线”的样式还是一致的，只是整条线束在一个更低的位置。
+            P = FH((hp["P"][0] + L["hoff"][0], yy))
             emit_insert_rot(it["name"], P[0], P[1], sc, hp.get("rot", 0.0))
             # 块里 CONN-Label 层的点 = 这个块指定的“标注落点”，换算到图纸坐标备用。
             # **必须跟着块一起转**：负极那一行的块是旋转过的（接线头对准板子负极），
@@ -3817,10 +3827,15 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             _y_row = _ys[len(_ys) // 2]
             _off_row = max(y_lab_of.get(_row, _y_row) - _y_row, _lab_th)
             _txt_tot = "%.1f" % math.hypot(o2[0] - o1[0], o2[1] - o1[1])
-            _ents, _g = dim_geom_h(o1, o2, _y_row - _off_row, _txt_tot,
+            # 总长标注：高度比蓝色那几行再高一点（离行线更远一档），字体与线全红——
+            # 有原生标注就用原生 DIMENSION（用户口径 2026-09-24）。
+            _y_tot = _y_row - _off_row * 1.45
+            _ents, _g = dim_geom_h(o1, o2, _y_tot, _txt_tot,
                                    _dim_th, _dim_asz, 1)      # 1 = 红色
             if _g:
-                emit_shape_ents(_ents)
+                if not (_annot == "dim"
+                        and emit_dim_h(o1, o2, _y_tot, _txt_tot, _ents, _g, _dim_th, 1)):
+                    emit_shape_ents(_ents)
                 _n_total += 1
         if _n_total:
             log.append("总长标注：%d 条（红色，取每一条线束首/末块的 CONN-Label，"
@@ -4605,8 +4620,10 @@ def _prim_list(records, blocks, mtx, depth, out):
                 _tx, _ty = _apply(mtx, tpos[0], tpos[1])[:2]
                 # 字高别超过块本身的三分之一（引线自带的字高常常是给原图比例写的）
                 _bh = max(base[1] - base[0], base[3] - base[2], 1.0)
+                # 字高：优先用引线自带的（用户反馈原来的太小、显示不全），
+                # 上限放到块高的 0.6 倍
                 out.append(("text", _tx, _ty, txt,
-                            max(0.5, min(th_m or _bh * 0.3, _bh * 0.35)),
+                            max(0.8, min(th_m or _bh * 0.5, _bh * 0.6)),
                             "MLEADER", col))
         elif t == "POINT":
             x, y = _apply(mtx, _gf(rec, "10"), _gf(rec, "20"))
