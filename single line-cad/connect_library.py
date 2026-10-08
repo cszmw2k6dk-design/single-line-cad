@@ -125,6 +125,13 @@ def flatten(block):
 def bbox(prims):
     xs, ys = [], []
     for p in prims:
+        # “多行引线抢救出来的图元”挂在 MLEADER 层上（见 wiring_raw._prim_list），
+        # 它们的坐标常常在块外很远（CBX 那个块的引线能甩到块外一百多个单位，
+        # 而块自己只有 12×15）。算包围盒时跳过它 —— 和 wiring_raw._prims_bbox
+        # 一个口径。以前这里算进去了，块的中线被“撑”到引线那头，于是
+        # CBX 摆下来和阵列行不在同一高度（用户口径 2026-10-08）。
+        if any(isinstance(x, str) and x.strip().upper() == "MLEADER" for x in p[2:]):
+            continue
         if p[0] == "line":
             xs += [p[1], p[3]]; ys += [p[2], p[4]]
         elif p[0] == "circle":

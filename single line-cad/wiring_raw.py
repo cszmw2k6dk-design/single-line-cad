@@ -2410,9 +2410,15 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
     #   （位置口径见 harness_fuse_chain）。
     #   这两根与相邻块的间距固定 fuse_gap（默认 20），不跟界面的“块固定间距”走：
     #   用户口径是“fuse 和靠近的那个块的距离保持 20”。
-    _is_ibex = "IBEX" in scheme.upper()
-    # IBEX 就是“Harness + CU-AI 转接”，所以 Harness 那套（自动加保险丝等）对它一样生效
-    _is_harness = ("HARNESS" in scheme.upper()) or _is_ibex
+    # 主方案 = Harness / IBEX / LYNX Plus（跳线方案叠在主方案后面，见界面的“跳线方案”）。
+    #   IBEX = Harness + CU-AI 转接（每段支线线束里两个），所以 Harness 那套（自动加
+    #   保险丝等）对它一样生效；
+    #   LYNX Plus 按老的“LYNX+IBEX”口径走（LYNX 的排法 + IBEX 的转接/保险丝）。
+    #   要是实际不是这个口径，改这一处就行。
+    _su = scheme.upper()
+    _is_lynx_plus = "LYNX PLUS" in _su
+    _is_ibex = ("IBEX" in _su) or _is_lynx_plus
+    _is_harness = ("HARNESS" in _su) or _is_ibex
     fuse_blk = (spec.get("fuse_block") or "FUSE").strip()
     fuse_gap = _n("fuse_gap", 35.0)      # 用户口径（2026-09-24）：fuse 与相邻块距离默认 35
     # IBEX 方案：支线线束段里自动加 CU-AI 转接（间距 50，用户口径 2026-09-22）
@@ -2525,6 +2531,12 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 neg_plug or "（空）", "开" if neg_auto else "关", neg_feed or "（空）"))
     log.append("     起始块=%s 间距%.0f | 跨接线=%s" %
                (head_blk or "（空）", head_gap, "开" if link else "关"))
+    # 跳线方案（AI-Extender / CU-Extender / Extend the main cable）现在是主方案后面的
+    # 叠加项，生成逻辑还没接上 —— 先明确报一句，免得选了没反应还以为是程序坏了。
+    _jumper = next((j for j in ("AI-Extender", "CU-Extender", "Extend the main cable")
+                    if j.upper() in _su), "")
+    if _jumper:
+        log.append("跳线方案: %s（这块的生成逻辑还没接上，图上先不画它）" % _jumper)
 
     seq_mode = bool(m_first and m_mid and m_last)
     if (not module and not seq_mode) or n_per < 1 or n_str < 1:
@@ -2814,6 +2826,11 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             px = [modmap[(0, s)]["P"][0] + pos_l[0] for s in range(n_str)]
             nx = [modmap[(n_per - 1, s)]["P"][0] + neg_l[0] for s in range(n_str)]
             places, kp, kn = [], 0, 0
+            # 负极行里“要钉在板子端子上”的块计数器（头部接头算第 0 个、正极行用 kp 同理）。
+            # 以前这里用 idx - neg_from 当串号，一旦链里插了 CU-AI 这种不钉位的块，
+            # 串号就整体错位，串号用完之后所有块都落到**最后一根端子**上，
+            # 一堆块叠在同一个点（用户口径 2026-10-08：“后面支架重叠”）。
+            _neg_pin_i = 0
             right = None
             head_right = None        # 不钉位的块（保险丝/接头/汇流箱）自己排一行，从阵列左边缘起
             # 头部这一行的起点：**对齐汇流箱(CBX)的中心**（CBX 在阵列左边）
@@ -2931,7 +2948,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                     # （第 1 串下面就是负极支线，不再是公头）。
                     # 块里标了 CONNNEG 就用**那个接点**去对（和正极用 CONNPOS 一个道理）；
                     # 没标就退回用块中心。
-                    _k = idx - neg_from
+                    _k = _neg_pin_i                 # 只用“钉位块”计数，不数 CU-AI 这类
                     if _k == 0:
                         cx = head_x0 if head_x0 is not None else (nx[0] if nx else abox[0])
                     else:
@@ -2939,22 +2956,26 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                         cx = nx[_j] if _j < len(nx) else (nx[-1] if nx else abox[0])
                     _nn = [(x, y) for x, y, _ly in _conn_points(bmap.get(it["name"], []), bmap)
                            if "NEG" in (_ly or "").upper()]
-                    if _k == 0:
-                        # 头部接头不钉板子：按**块中心**对齐 CBX。正极行的头部块也是中心对齐，
-                        # 这样两个头部的中心才在同一条竖线上（下面才算插针）
-                        pxx = cx - cw
-                    elif _nn:
-                        px0, py0 = _nn[0]
-                        # 转过 180° 的块，接点在图上跑到 -x
-                        pxx = cx - ((-px0) if _rot else px0) * s
+                    if _k == 0 or _nn or it["name"] in neg_names:
+                        _neg_pin_i += 1
+                        if _k == 0:
+                            # 头部接头不钉板子：按**块中心**对齐 CBX。正极行的头部块也是中心对齐，
+                            # 这样两个头部的中心才在同一条竖线上（下面才算插针）
+                            pxx = cx - cw
+                        elif _nn:
+                            px0, py0 = _nn[0]
+                            # 转过 180° 的块，接点在图上跑到 -x
+                            pxx = cx - ((-px0) if _rot else px0) * s
+                        else:
+                            # 没有 CONNNEG 点的支线块：按**接点竖列的中线**对
+                            _xs = [p1[0] for p1 in (l + r)]
+                            _off = ((min(_xs) + max(_xs)) / 2.0) if _xs else cw
+                            pxx = cx - _off
                     else:
-                        # 没有 CONNNEG 点的块（公头 Male / 母头 Fmale）以前按“块中心”对，
-                        # 可它们的块中心离接点 9~11 个单位，插针就落在出线点旁边。
-                        # 改成按**接点竖列的中线**对：只有一列的块（公头/母头）接点正好压在
-                        # 出线点正下方；左右对称的块（NEG）中线≈块中心，位置和以前一样。
-                        _xs = [p1[0] for p1 in (l + r)]
-                        _off = ((min(_xs) + max(_xs)) / 2.0) if _xs else cw
-                        pxx = cx - _off
+                        # 既不钉端子、也不是负极支线（CU-AI / FUSE 这类）：接着上一块排，
+                        # 别都挤到最后一根端子上。
+                        _g = row_gap(idx)
+                        pxx = (right + _g) if right is not None else (abox[0] + cw)
                 # 正极支线 + 末端公头都算“正极那一路”：第 k 个钉在第 k 串出线点的正下方
                 elif it["name"] in pos_names and kp < len(px) and l:
                     pxx = px[kp] - l[0][0]; kp += 1
@@ -3212,7 +3233,12 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 # 纵向共用同一条基准线 —— 所以每段的板子在同一高度，缩放也一致。
                 _sc = _seg_common
                 off = ((fbx[0] + fbx[1]) / 2.0 - _sc["tot"] * k / 2.0
-                       + _sc["x_of"][_si] * k - L["box"][0] * k,
+                       # 落点按**阵列自己的左边缘**（abox）对齐，不要用整段内容框
+                       # （box）的左边缘：每段的线束/起始块往左伸出去多少不一样
+                       # （第 1 段有 CBX、后面的段没有），用 box 对齐就会把后一段
+                       # 往左拽，两段的板子叠在一起（用户口径 2026-10-08：
+                       # “摆板子先从左往右摆好、再整体缩放”）。
+                       + _sc["x_of"][_si] * k - L["abox"][0] * k,
                        _sc["yc"] - _sc["box_cy"] * k)
             else:
                 off = ((fbx[0] + fbx[1]) / 2.0 - (L["box"][0] + L["box"][1]) / 2.0 * k,
@@ -3493,10 +3519,15 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             hp = L["hp"][idx]
             sc = hp["s"] * k
             yy = hp.get("y0", hp["P"][1] + L["hoff"][1])
-            # 线束落点：分段时逐段下移错开 —— **正极行和负极行一起移**
-            # （用户口径 2026-09-24：“正极负极同时往下移”），两行的相对关系不变，
-            # 所以“出线”的样式还是一致的，只是整条线束在一个更低的位置。
-            P = FH((hp["P"][0] + L["hoff"][0], yy))
+            # 线束落点：分段时逐段下移错开。但**钉在板子端子上的支线块**
+            # （正极支线/负极支线/末端接头）不跟着错开 —— 用户口径
+            # （2026-10-08：“出线部分和前一个支架类型长度间距保持一致”）：
+            # 它和面板之间那截“出线”必须和 x 段**一样长、一样角度**，
+            # 所以它留在面板正下方那一档；只有其余块（CBX/FUSE/接头/末端）
+            # 按段往下错开，线束行会在支线处折一下。
+            _q = (hp["P"][0] + L["hoff"][0], yy)
+            _pinned = (it["name"] in pos_names) or (it["name"] in neg_names)
+            P = F(_q) if _pinned else FH(_q)
             emit_insert_rot(it["name"], P[0], P[1], sc, hp.get("rot", 0.0))
             # 块里 CONN-Label 层的点 = 这个块指定的“标注落点”，换算到图纸坐标备用。
             # **必须跟着块一起转**：负极那一行的块是旋转过的（接线头对准板子负极），
@@ -3587,6 +3618,13 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                               (float(y_ref) if y_ref is not None else None),
                               text_on, (str(length_txt) if length_txt else None)))
 
+        # 链里第一个“支线块”的位置：排在它前面的接头（和 CBX 对齐的那个）不算支线
+        # 注意只认**支线块**（POS/NEG），不能把公头/母头算进来 —— 它就是接头。
+        _feed_only = [x for x in (pos_feed, neg_feed) if x]
+        _first_feed_i = next((i for i, _it in enumerate(hinsts)
+                              if _it["name"] in _feed_only), len(hinsts))
+        _plugs_tail = set(i for i, _it in enumerate(hinsts)
+                          if _it["name"] in plug_names and i >= _first_feed_i)
         for idx in range(1, len(hinsts)):
             if head_blk and (hinsts[idx - 1]["name"] == head_blk or hinsts[idx]["name"] == head_blk):
                 continue      # 起始块（CBX）是独立摆在阵列左边的，不和线束链连线
@@ -3594,7 +3632,11 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             # 线号按给的定义分两种（字面就是界面上填的“主线线号 / 支线线号”）：
             #   主线 = 支线块↔支线块之间、以及第一个接头→第一根支线之间；
             #   支线 = 最后一根支线块→公头/母头之间那一段（这一段两头必有接头块）。
-            _txt = awg_br if ((_a in plug_names) or (_b in plug_names)) else awg_main
+            # 注意：公头/母头**排在头部**时（和 CBX 对齐的那个接头）不算“支线”，
+            # 它前面那几段仍然是主线 —— 用户反馈“第一个支线前面一部分同时有主线、
+            # 支线两种标号”就是这里把头部接头也当成支线了。只有**链尾**的接头
+            # （最后一根支线之后）才算支线那一段。
+            _txt = awg_br if ((idx - 1 in _plugs_tail) or (idx in _plugs_tail)) else awg_main
             _pa = (neg_from is not None and idx - 1 >= neg_from)
             _pb = (neg_from is not None and idx >= neg_from)
             if _pa != _pb:
@@ -4609,15 +4651,39 @@ def _prim_list(records, blocks, mtx, depth, out):
                 except (TypeError, ValueError):
                     continue
             base = _prims_bbox(out) or (0.0, 0.0, 0.0, 0.0)
-            _lim = max(base[1] - base[0], base[3] - base[2], 1.0) * 3.0
+            _bw = max(base[1] - base[0], 1.0)
+            _bh0 = max(base[3] - base[2], 1.0)
             _cx, _cy = (base[0] + base[1]) / 2.0, (base[2] + base[3]) / 2.0
-            keep = [p for p in verts if math.hypot(p[0] - _cx, p[1] - _cy) <= _lim]
+            # 引线坐标常常是按**别的比例**画的：CBX 那个块的引线能甩到块外一百多个
+            # 单位，于是“Combiner Box”几个字飘在离块老远的地方（用户看到的
+            # “CBX 显示异常”）。这里按块自己的大小把引线收回来：最远伸出块尺寸的
+            # 1.1 倍，文字摆在引线外端。
+            _rmax = max(_bw, _bh0) * 1.1
+            keep = []
+            for _px, _py in verts:
+                _dx, _dy = _px - _cx, _py - _cy
+                _d = math.hypot(_dx, _dy)
+                if _d > _rmax > 0:
+                    _px = _cx + _dx / _d * _rmax
+                    _py = _cy + _dy / _d * _rmax
+                keep.append((_px, _py))
             if len(keep) >= 2:
                 out.append(("poly", keep, False, "MLEADER", col))
             if txt:
-                if tpos is None or tpos[1] is None:
-                    tpos = keep[0] if keep else (0.0, 0.0)
-                _tx, _ty = _apply(mtx, tpos[0], tpos[1])[:2]
+                _far = (max(keep, key=lambda q: (q[0] - _cx) ** 2 + (q[1] - _cy) ** 2)
+                        if keep else None)
+                if _far is not None:
+                    # 文字摆在引线伸得最远的那一头、再往外挪小半个字高，别压在引线上。
+                    # 注意 keep 里的点已经过 mtx 变换（和上面 append 的那条引线同一
+                    # 套坐标），所以这里**不要**再乘一次 mtx。
+                    _dx, _dy = _far[0] - _cx, _far[1] - _cy
+                    _d = math.hypot(_dx, _dy) or 1.0
+                    _tx = _far[0] + _dx / _d * _bh0 * 0.35
+                    _ty = _far[1] + _dy / _d * _bh0 * 0.35
+                else:
+                    if tpos is None or tpos[1] is None:
+                        tpos = (base[0], base[3])
+                    _tx, _ty = _apply(mtx, tpos[0], tpos[1])[:2]
                 # 字高别超过块本身的三分之一（引线自带的字高常常是给原图比例写的）
                 _bh = max(base[1] - base[0], base[3] - base[2], 1.0)
                 # 字高：优先用引线自带的（用户反馈原来的太小、显示不全），

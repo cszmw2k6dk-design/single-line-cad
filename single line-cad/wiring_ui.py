@@ -264,6 +264,90 @@ def open_with_default(name):
         return False, "%s: %s" % (type(ex).__name__, ex)
 
 
+def _ask_save_path(default_name="drawing.dwg", kind="dwg"):
+    """弹一个 Windows“另存为”对话框，返回用户选的完整路径；取消返回 ""。
+
+    用的是系统自带的 comdlg32.GetSaveFileNameW（ctypes 直接调），不依赖 tkinter
+    —— 打包 exe 时 tkinter 是被排除掉的，用它会在用户机器上直接崩。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class OPENFILENAMEW(ctypes.Structure):
+            _fields_ = [
+                ("lStructSize", wintypes.DWORD),
+                ("hwndOwner", wintypes.HWND),
+                ("hInstance", wintypes.HINSTANCE),
+                ("lpstrFilter", wintypes.LPCWSTR),
+                ("lpstrCustomFilter", wintypes.LPWSTR),
+                ("nMaxCustFilter", wintypes.DWORD),
+                ("nFilterIndex", wintypes.DWORD),
+                ("lpstrFile", wintypes.LPWSTR),
+                ("nMaxFile", wintypes.DWORD),
+                ("lpstrFileTitle", wintypes.LPWSTR),
+                ("nMaxFileTitle", wintypes.DWORD),
+                ("lpstrInitialDir", wintypes.LPCWSTR),
+                ("lpstrTitle", wintypes.LPCWSTR),
+                ("Flags", wintypes.DWORD),
+                ("nFileOffset", wintypes.WORD),
+                ("nFileExtension", wintypes.WORD),
+                ("lpstrDefExt", wintypes.LPCWSTR),
+                ("lCustData", wintypes.LPARAM),
+                ("lpfnHook", ctypes.c_void_p),
+                ("lpTemplateName", wintypes.LPCWSTR),
+                ("pvReserved", ctypes.c_void_p),
+                ("dwReserved", wintypes.DWORD),
+                ("FlagsEx", wintypes.DWORD)]
+
+        if kind == "dwg":
+            filt = "DWG 图纸 (*.dwg)\0*.dwg\0所有文件 (*.*)\0*.*\0"
+            ext = "dwg"
+        else:
+            filt = "DXF 图纸 (*.dxf)\0*.dxf\0CSV 表格 (*.csv)\0*.csv\0所有文件 (*.*)\0*.*\0"
+            ext = os.path.splitext(default_name)[1].lstrip(".") or "dxf"
+        buf = ctypes.create_unicode_buffer(1024)
+        buf.value = default_name
+        ofn = OPENFILENAMEW()
+        ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
+        ofn.lpstrFilter = filt
+        ofn.nFilterIndex = 1
+        ofn.lpstrFile = ctypes.cast(buf, wintypes.LPWSTR)
+        ofn.nMaxFile = 1024
+        ofn.lpstrTitle = "另存为"
+        ofn.lpstrDefExt = ext
+        # OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_EXPLORER
+        ofn.Flags = 0x2 | 0x4 | 0x800 | 0x80000
+        ok = ctypes.windll.comdlg32.GetSaveFileNameW(ctypes.byref(ofn))
+        return buf.value if ok else ""
+    except Exception:
+        return ""
+
+
+def save_as_file(name, kind=""):
+    """把输出目录里的文件另存到用户选的位置（用户口径 2026-10-08：要能选保存地址）。
+
+    DWG 走 cad_draw.save_as：先让 CAD 把工作副本存一次（画进去的内容还没落盘），
+    再把这份文件复制到目标位置；DXF/CSV 直接复制。
+    """
+    p = _safe_out_file(name)
+    if not p:
+        return False, "找不到文件：%s" % name
+    base = os.path.basename(p)
+    is_dwg = (kind == "dwg") or base.lower().endswith(".dwg")
+    dst = _ask_save_path(base, "dwg" if is_dwg else "dxf")
+    if not dst:
+        return False, "已取消"
+    if is_dwg:
+        return cd.save_as(p, dst)
+    try:
+        import shutil
+        shutil.copy2(p, dst)
+        return True, dst
+    except Exception as ex:
+        return False, "%s: %s" % (type(ex).__name__, ex)
+
+
 # ----------------------------- HTTP -----------------------------
 HTML = r"""<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
@@ -335,8 +419,6 @@ HTML = r"""<!doctype html>
  #progWrap{background:var(--card);border:1px solid var(--line);border-radius:10px;
       padding:10px 12px;margin-top:12px}
  #progTxt{color:var(--ink2)}
- #progLog{background:var(--log);border:1px solid var(--line);border-radius:8px;color:#a8adb2;
-      font-family:Consolas,"Microsoft YaHei",monospace}
  .out .dlrow{background:var(--log);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
  /* 语言：一个地球图标，点开才是 中文 / English（原来是个一直占位置的下拉框） */
  .langbox{position:relative}
@@ -375,18 +457,20 @@ HTML = r"""<!doctype html>
 <body>
 <div id="szBox" style="position:fixed;right:14px;bottom:14px;z-index:99;background:var(--card);
      border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:flex;gap:6px;align-items:center">
-  <b style="font-size:13px">方案</b>
-  <select id="scheme" style="max-width:190px" onchange="onSchemeChange()"
-    title="方案的生成逻辑逐个补；现在只有“串的排法”按方案自动定：带 LYNX 的方案从下往上排，其余从左往右排">
+  <b style="font-size:13px">主方案</b>
+  <select id="scheme" style="max-width:150px" onchange="onSchemeChange()"
+    title="主方案：Harness / IBEX / LYNX Plus。串的排法跟着主方案走（带 LYNX 的从上往下叠，其余从左往右接），不用再填">
     <option value="Harness">Harness</option>
-    <option value="ALEX">ALEX</option>
-    <option value="IBEX+AI跳线">IBEX+AI跳线</option>
-    <option value="IBEX PLUS">IBEX PLUS</option>
-    <option value="IBEX+CU跳线">IBEX+CU跳线</option>
-    <option value="LYNX+CU跳线">LYNX+CU跳线</option>
-    <option value="LYNX+AI跳线">LYNX+AI跳线</option>
-    <option value="LYNX+Harness">LYNX+Harness</option>
-    <option value="LYNX+IBEX">LYNX+IBEX</option>
+    <option value="IBEX">IBEX</option>
+    <option value="LYNX Plus">LYNX Plus</option>
+  </select>
+  <b style="font-size:13px">跳线方案</b>
+  <select id="jumper" style="max-width:180px" onchange="onSchemeChange()"
+    title="可叠加的跳线方案（AI-Extender / CU-Extender / Extend the main cable）；不选 = 不加跳线">
+    <option value="">（不加跳线）</option>
+    <option value="AI-Extender">AI-Extender</option>
+    <option value="CU-Extender">CU-Extender</option>
+    <option value="Extend the main cable">Extend the main cable</option>
   </select>
 </div>
 <header>
@@ -442,6 +526,13 @@ HTML = r"""<!doctype html>
         <option value="neg">负极靠近汇流箱</option>
       </select>
       <label>每串板数</label><input type="number" id="nper" value="20" min="2" step="1">
+      <label>外框图模板</label><select id="frame" onchange="onFrameChange()"><option value="">不用</option></select>
+      <!-- 串的排法不再让用户填：跟着主方案走（带 LYNX 的从上往下叠，其余从左往右接），
+           存在这个隐藏格子里，后面所有读 v('dir') 的地方照旧能用。 -->
+      <input type="hidden" id="dir" value="right">
+    </div>
+    <div class="row" id="arrayDetailRow" style="display:none">
+      <!-- 下面这一行是阵列细节：串数、跨支架距离、净空、起始块 -->
       <label>串数</label><input type="text" id="nstr" value="4" style="width:92px"
         title="支持分段：4 = 一组 4 串；2+3 / 3+2 = 支架两侧各多少串，段与段之间走“跨支架距离”">
       <label>跨支架距离</label><input type="number" id="brkgap" value="30" step="1"
@@ -450,13 +541,9 @@ HTML = r"""<!doctype html>
         title="同一串里，板与板之间的净空">
       <label>串间净空</label><input type="number" id="gapy" value="2" step="1"
         title="串与串之间的净空；留空 = 跟板间净空一样（贴紧）。默认 2（贴紧排，跟板间净空一个口径）">
-      <label>串的排法</label><select id="dir">
-        <option value="right">从左往右接</option>
-        <option value="down">从上往下叠</option></select>
       <label>起始块</label><select id="headblk" style="max-width:130px"
         title="摆在阵列最左边、与板子固定距离的块（默认 CBX，从**板子块库**里选）"></select>
       <label>起始块间距</label><input type="number" id="headgap" value="60" step="5">
-      <label><input type="checkbox" id="enlarge"> 允许放大到占满</label>
     </div>
     <div class="row" id="bhaRow" style="display:none;flex-direction:column;align-items:stretch">
       <details id="bhaDetails" style="border:1px solid var(--line);border-radius:8px;padding:6px 8px">
@@ -594,8 +681,9 @@ HTML = r"""<!doctype html>
       <label><input type="checkbox" id="link"> 画阵列↔线束跨接线</label>
       <label><input type="checkbox" id="hspan" checked> 线束接点对齐缩放</label>
       <label>间隔 GAP</label><input type="number" id="gap" value="40" step="5">
-      <label>外框图</label><select id="frame" onchange="onFrameChange()"><option value="">不用</option></select>
-      <label><input type="checkbox" id="tocad" title="画进 CAD 里那张外框图上；连着生成几张时不删前面的图，一张一张错开排（同一列先从上往下，排满了往右一列）"> 直接画到 CAD(COM)</label>
+      <!-- 外框图模板挪到①板子页的“全局”那一行了（用户口径 2026-10-08：线束页不再重复选） -->
+      <label><input type="checkbox" id="tocad" checked
+        title="默认就画进 CAD 里那张外框图上；连着生成几张时不删前面的图，一张一张错开排（同一列先从上往下，排满了往右一列）。取消勾选才只出 DXF 文件"> 直接画到 CAD(COM)</label>
       <button onclick="gen()">生成</button>
       <button class="ghost" onclick="gotoStep(1)">← 上一步</button>
       <button class="ghost" onclick="clearChain()">清空</button>
@@ -606,8 +694,6 @@ HTML = r"""<!doctype html>
           <div id="progBar" style="height:100%;width:0%;background:var(--brand);border-radius:8px;transition:width .25s"></div>
         </div>
         <div id="progTxt" style="font-size:13px;margin-top:6px;font-weight:600"></div>
-        <pre id="progLog" style="display:none;margin:8px 0 0;padding:8px 10px;max-height:170px;
-             overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap"></pre>
       </div>
   </div>
 </div>
@@ -742,6 +828,8 @@ const AWG_BRANCH=['10 AWG','12 AWG'];
 function setMode(m){
   mode=(m==='batch')?'batch':'array';
   document.getElementById('arrayRow').style.display='flex';
+  // “阵列细节”那一行（串数/跨支架/净空/起始块）跟着一起显示
+  document.getElementById('arrayDetailRow').style.display='flex';
   // 批量模式下这张桩表**照样显示**（只在批量时压矮一点）：它是给所有批量行用的
   // “默认一套” —— 每行的“BHA位置”那格留空就沿用它，填了就只按那一行自己的来。
   // （以前这里把整张表藏起来，结果批量页里根本找不到地方加电机/BHA。）
@@ -818,7 +906,7 @@ async function doPreview(){
   const box=document.getElementById('arrPrev'); if(!box) return;
   const my=++prevSeq;
   box.innerHTML='<div style="color:#727577;font-size:12px;padding:6px">更新中…</div>';
-  const body={scheme:v('scheme','Harness'),
+  const body={scheme:schemeValue(),
               module_first:v('mod1',''), module_mid:v('mod2',''), module_last:v('mod3',''),
               n_per:parseInt(v('nper',20))||20,
               n_strings:String(v('nstr','4')||'4').trim(),
@@ -826,7 +914,7 @@ async function doPreview(){
               gap_x:parseFloat(v('gapx',1))||0,
               // 串间净空：界面上单独一格；留空 = 跟随板间净空
               gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',2))||0)),
-              dir:v('dir','right'),
+              dir:dirForScheme(),
               head_block:String(v('headblk','CBX')||'').trim(),
               head_gap:parseFloat(v('headgap',60))||60,
               bha:bhaPayload()};
@@ -862,14 +950,14 @@ async function doPreviewBatch(){
   const out=[];
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
-    const body={scheme:v('scheme','Harness'),
+    const body={scheme:schemeValue(),
                 module_first:v('mod1',''), module_mid:v('mod2',''), module_last:v('mod3',''),
                 n_per:parseInt(r._nperEl?r._nperEl.value:r.n_per)||parseInt(v('nper',20))||20,
                 n_strings:String((r._nstrEl?r._nstrEl.value:r.n_str)||v('nstr','4')||'4').trim(),
                 bracket_gap:parseFloat(v('brkgap',4))||4,
                 gap_x:parseFloat(v('gapx',1))||0,
                 gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',2))||0)),
-                dir:v('dir','right'),
+                dir:dirForScheme(),
                 head_block:String(v('headblk','CBX')||'').trim(),
                 head_gap:parseFloat(v('headgap',60))||60,
                 bha:(String(r.bha||'').trim()||bhaPayload())};
@@ -989,26 +1077,25 @@ function clearChain(){chain=[];renderChain();document.getElementById('out').inne
 // 取输入值：元素不存在（多半是浏览器缓存了旧页面）就返回默认值，绝不抛错
 function v(id, dft){ const e=document.getElementById(id); return e? e.value : (dft===undefined?'':dft); }
 function ck(id, dft){ const e=document.getElementById(id); return e? e.checked : !!dft; }
-let progTimer=null;
+// 进度条：只报“百分之几 + 已经用了多久”（用户口径 2026-10-08：不要那些细节过程）。
+let progTimer=null, progT0=0;
+function fmtElapsed(ms){
+  const s=Math.max(0,Math.floor(ms/1000));
+  return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+}
 function progStart(txt){
   document.getElementById('progWrap').style.display='block';
   document.getElementById('progBar').style.width='0%';
-  document.getElementById('progTxt').textContent=txt||'开始…';
+  progT0=Date.now();
+  document.getElementById('progTxt').textContent=(txt||'开始')+' · 已用 0:00';
   RT(document.getElementById('progWrap'));
-  const _pl=document.getElementById('progLog');
-  if(_pl){_pl.style.display='none';_pl.textContent='';}
   if(progTimer) clearInterval(progTimer);
   progTimer=setInterval(async ()=>{
     try{
       const r=await fetch('/api/progress'); const d=await r.json();
       document.getElementById('progBar').style.width=(d.pct||0)+'%';
-      document.getElementById('progTxt').textContent=(d.pct||0)+'%  '+(d.stage||'');
-      const lg=document.getElementById('progLog');
-      if(lg && d.tail && d.tail.length){
-        lg.style.display='block';
-        lg.textContent=d.tail.join('\n');
-        lg.scrollTop=lg.scrollHeight;
-      }
+      document.getElementById('progTxt').textContent=
+        (d.pct||0)+'% · 已用 '+fmtElapsed(Date.now()-progT0);
       RT(document.getElementById('progWrap'));
     }catch(e){}
   },200);
@@ -1016,8 +1103,9 @@ function progStart(txt){
 function progStop(finalText){
   if(progTimer){clearInterval(progTimer);progTimer=null;}
   document.getElementById('progBar').style.width='100%';
-  document.getElementById('progTxt').textContent=finalText||'完成';
-  setTimeout(()=>{document.getElementById('progWrap').style.display='none';},1500);
+  document.getElementById('progTxt').textContent=
+    (finalText||'完成')+' · 用时 '+fmtElapsed(Date.now()-progT0);
+  setTimeout(()=>{document.getElementById('progWrap').style.display='none';},2500);
   RT(document.getElementById('progWrap'));
 }
 // 组件朝向：哪一端靠近汇流箱(CBX)。
@@ -1042,7 +1130,7 @@ const GAP_SHEET=60;           // 图与图之间的净空（界面上不再显�
 function arrayCommon(){
   applyPolarityNear();          // 生成前再对齐一次，保证和“组件朝向”一致
   return {harness:chain, gap:parseFloat(v('gap',40))||40,
-          scheme:v('scheme','Harness'),
+          scheme:schemeValue(),
           module_first:v('mod1',''), module_mid:v('mod2',''), module_last:v('mod3',''),
           n_per:parseInt(v('nper',20))||20,
           // 串数允许写成分段：4 / 2+3 / 3+2（段间走“跨支架距离”）
@@ -1050,7 +1138,7 @@ function arrayCommon(){
           bracket_gap:parseFloat(v('brkgap',4))||4,
           gap_x:parseFloat(v('gapx',1))||0,
           gap_y:((String(v('gapy','')).trim()==='')?null:(parseFloat(v('gapy',2))||0)),
-          dir:v('dir','right'),
+          dir:dirForScheme(),
           harness_scale:1,              // 线束缩放不做了（用户口径 2026-09-23：没用就删）
           fixed_gap:parseFloat(v('fixgap',30))||30,
           head_block:String(v('headblk','CBX')||'').trim(),
@@ -1068,7 +1156,9 @@ function arrayCommon(){
           awg_main:String(v('awgmain','')||'').trim(),
           awg_branch:String(v('awgbranch','')||'').trim(),
           annot:v('annot','dim')||'dim',
-          allow_enlarge:ck('enlarge'),
+          // “允许放大到占满”已从界面删掉（用户口径 2026-10-08：没用）——装不下时
+          // 只等比缩小，尺寸口径保持你填的间距，不改间距去硬塞。
+          allow_enlarge:false,
           // 连着画到 CAD 时的落点：一列几张 + 图间距（拼图排格子也用这几个数）
           cols:parseInt(v('sheetc',2))||2,
           // 图间距不再在界面上调：固定用 GAP_SHEET（几张图挨着排就行）
@@ -1076,12 +1166,16 @@ function arrayCommon(){
           gap_sheet_y:GAP_SHEET,
           bha:bhaPayload()};
 }
-// 方案的生成逻辑逐个补；现在只有“串的排法”按方案自动定：
-// 带 LYNX 的方案从下往上排，其余方案从左往右排。
+// 方案 = 主方案（Harness / IBEX / LYNX Plus）+ 可叠加的跳线方案（AI/CU-Extender、
+// Extend the main cable）。串的排法跟着**主方案**走：带 LYNX 的从上往下叠，
+// 其余从左往右接（用户口径 2026-10-08：串的排法不再让用户填）。
+function mainScheme(){ return String(v('scheme','Harness')||'Harness').trim()||'Harness'; }
+function jumperScheme(){ return String(v('jumper','')||'').trim(); }
+function schemeValue(){ const j=jumperScheme(); return j? (mainScheme()+'+'+j) : mainScheme(); }
+function dirForScheme(){ return (mainScheme().toUpperCase().indexOf('LYNX')>=0)?'down':'right'; }
 function onSchemeChange(){
-  const s=document.getElementById('scheme'); if(!s) return;
-  const d=document.getElementById('dir'); if(!d) return;
-  d.value=(String(s.value).toUpperCase().indexOf('LYNX')>=0)?'down':'right';
+  const d=document.getElementById('dir'); if(d) d.value=dirForScheme();
+  schedulePreview();
 }
 
 // ---------- 电机 / BHA 桩位置（一行 = 一处插入） ----------
@@ -1268,6 +1362,7 @@ async function genBatch(){
         (d.zip_url?('<a class="dl" href="'+d.zip_url+'" download>下载全部(zip)</a> '):'')+
         '<button class="ghost" onclick="fileAct(\'reveal\')">打开输出文件夹</button>'+
         '<span id="fileMsg" style="font-size:12px;color:var(--muted);margin-left:8px"></span></div>'+
+      dwgRow(d)+
       rowsHtml+'<div id="log">'+(d.log||[]).join('\n')+'</div>';
     RT(document.getElementById('out'));
     return;
@@ -1282,6 +1377,7 @@ async function genBatch(){
       (d.csv_url?('<button class="ghost" onclick="fileAct(\'export\',lastOut.csv)">线长清单存到桌面</button> '):'') +
       (d.dxf_url?('<a class="dl" href="'+d.dxf_url+'" download>下载 DXF</a> '):'') +
       '<span id="fileMsg" style="font-size:12px;color:var(--muted);margin-left:8px"></span></div>' +
+    dwgRow(d) +
     '<div id="log">'+(d.log||[]).join('\n')+'</div>';
   RT(document.getElementById('out'));
 }
@@ -1314,6 +1410,7 @@ async function gen(){
       (d.csv_url?('<a class="dl" href="'+d.csv_url+'" download>下载线长清单 CSV</a> '):'') +
       '<span id="fileMsg" style="font-size:12px;color:var(--muted);margin-left:8px"></span>' +
     '</div>' +
+    dwgRow(d) +
     '<div id="log">'+(d.log||[]).join('\n')+'</div>';
   RT(document.getElementById('out'));
 }
@@ -1321,6 +1418,29 @@ async function gen(){
 // 所以窗口里改用程序自己的保存/打开能力；浏览器模式还走原来的下载链接。
 // 注意：pywebview 的 api 是页面加载后异步注入的，所以这里用函数现查，别写成常量
 function inApp(){ return !!(window.pywebview && window.pywebview.api); }
+// 画到 CAD 之后：把那张 DWG 的路径显示出来 + 一个“另存 DWG 到…”（自己选保存位置）。
+// 用户口径 2026-10-08：生成的 dwg 要在界面上看得到路径、并且能选保存地址。
+function dwgRow(d){
+  if(!d || !d.dwg_file) return '';
+  const nm=String(d.dwg_file).split(/[\\/]/).pop();
+  return '<div class="dlrow"><b>DWG</b>'+
+    '<span style="font-size:12px;color:var(--muted);user-select:text;word-break:break-all">'+
+      d.dwg_file+'</span> '+
+    '<button class="ghost" onclick="dwgAct(\'saveas\',\''+nm+'\')">另存 DWG 到…</button> '+
+    '<button class="ghost" onclick="dwgAct(\'reveal\',\''+nm+'\')">打开所在文件夹</button> '+
+    '<span id="dwgMsg" style="font-size:12px;color:var(--muted);margin-left:8px"></span></div>';
+}
+async function dwgAct(act,name){
+  const box=document.getElementById('dwgMsg');
+  if(box) box.textContent=T('处理中…');
+  try{
+    const r=await fetch('/api/file/'+act+'?name='+encodeURIComponent(name)+'&kind=dwg');
+    const d=await r.json();
+    if(box) box.textContent=(d.ok?'✓ ':'✗ ')+
+      (act==='saveas' ? ('已保存到 '+d.msg) : (d.ok?'已在文件夹里定位':d.msg));
+  }catch(e){ if(box) box.textContent='✗ '+e; }
+  if(box) RT(box);
+}
 async function fileAct(act, name){
   const f = name || lastOut.dxf;
   const box = document.getElementById('fileMsg');
@@ -1519,6 +1639,7 @@ class Handler(BaseHTTPRequestHandler):
         """桌面窗口里的文件操作（浏览器里不需要，浏览器直接下载就行）。
 
         GET /api/file/export?name=x.dxf&to=desktop|downloads  → 另存到桌面/下载
+        GET /api/file/saveas?name=x.dwg&kind=dwg              → 弹“另存为”自己选路径
         GET /api/file/reveal?name=x.dxf                      → 资源管理器里定位文件
         GET /api/file/open?name=x.dxf                        → 用默认程序打开（进 CAD）
         """
@@ -1529,6 +1650,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if action == "export":
                 ok, msg = export_file(name, (q.get("to") or ["desktop"])[0])
+            elif action == "saveas":
+                ok, msg = save_as_file(name, (q.get("kind") or [""])[0])
             elif action == "reveal":
                 ok, msg = reveal_file(name)
             elif action == "open":
@@ -1680,6 +1803,7 @@ class Handler(BaseHTTPRequestHandler):
         # 进度回调：把当前阶段 + 最近几行日志一起报给界面（画到 CAD 那段尤其需要，
         # 否则 CAD 连上/在画什么，界面上什么都看不到）
         _box = {"log": []}
+        _info = {}                     # 画到 CAD 后回填“画进的是哪张 DWG”
 
         def pg(pct, stage):
             set_progress(pct, stage, _box["log"][-8:])
@@ -1743,7 +1867,7 @@ class Handler(BaseHTTPRequestHandler):
                                        # 错开排（从上往下、排满往右一列）
                                        auto_place=True, clear_first=False,
                                        **place_opts(req),
-                                       progress=pg)
+                                       progress=pg, info=_info)
             except Exception as ex:
                 import traceback
                 log.append("⚠ 画到 CAD 失败: %s: %s" % (type(ex).__name__, ex))
@@ -1757,7 +1881,9 @@ class Handler(BaseHTTPRequestHandler):
             pass
         resp = {"svg": svg, "dxf_url": "/out/" + fn,
                 "csv_url": ("/out/" + csv_fn) if csv_fn else "",
-                "log": log, "dxf_file": outpath}
+                "log": log, "dxf_file": outpath,
+                "dwg_file": _info.get("dwg", ""),
+                "dwg_name": (os.path.basename(_info["dwg"]) if _info.get("dwg") else "")}
         set_progress(100, "完成", log[-8:])
         PROGRESS["running"] = False
         sw = stale_warning()
@@ -1829,6 +1955,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if separate:
             files, total = [], len(items)
+            _dwg_files = []              # 画到 CAD 时每张落在哪份 DWG 上（去重）
             for n, it in enumerate(items, 1):
                 def pg(pct, stage, _n=n, _total=total):
                     set_progress(int(((_n - 1) + max(0.0, min(100.0, float(pct))) / 100.0)
@@ -1857,6 +1984,7 @@ class Handler(BaseHTTPRequestHandler):
                     csv_fn = os.path.splitext(fn)[0] + ".csv"
                 except Exception as ex:
                     box["log"].append("⚠ 线长清单没写成: %s" % ex)
+                _binfo = {}
                 if req.get("to_cad"):
                     box["log"].append("—— 第 %d/%d 张画到 CAD ——" % (n, total))
                     dwg = os.path.join(FRAMES_DIR,
@@ -1877,14 +2005,17 @@ class Handler(BaseHTTPRequestHandler):
                             # 一列排满“每行放”那么多张就往右挪一列
                             auto_place=True, clear_first=False,
                             **place_opts(req),
-                            progress=pg)
+                            progress=pg, info=_binfo)
                     except Exception as ex:
                         import traceback
                         box["log"].append("⚠ 画到 CAD 失败: %s: %s" % (type(ex).__name__, ex))
                         box["log"].extend(traceback.format_exc().strip().splitlines()[-4:])
                 files.append({"no": it["name"], "name": fn, "url": "/out/" + fn,
                               "csv": csv_fn,
-                              "csv_url": ("/out/" + csv_fn) if csv_fn else ""})
+                              "csv_url": ("/out/" + csv_fn) if csv_fn else "",
+                              "dwg": _binfo.get("dwg", "")})
+                if _binfo.get("dwg") and _binfo["dwg"] not in _dwg_files:
+                    _dwg_files.append(_binfo["dwg"])
             zip_fn = ""
             if files:
                 zip_fn = "批量_%s.zip" % stamp
@@ -1909,6 +2040,8 @@ class Handler(BaseHTTPRequestHandler):
                 {"files": files, "total": total, "separate": True,
                  "zip_url": ("/out/" + zip_fn) if zip_fn else "",
                  "zip_name": zip_fn, "off": log,
+                 "dwg_files": _dwg_files,
+                 "dwg_file": (_dwg_files[0] if _dwg_files else ""),
                  "log": box["log"]}).encode("utf-8"), "application/json")
             return
 
@@ -1939,6 +2072,7 @@ class Handler(BaseHTTPRequestHandler):
             csv_fn = os.path.splitext(fn)[0] + ".csv"
         except Exception as ex:
             log.append("⚠ 线长清单没写成: %s" % ex)
+        _info = {}
         if req.get("to_cad"):
             log.append("—— 画到 CAD（%d 张一起画进当前图）——" % len(names))
             dwg = os.path.join(FRAMES_DIR,
@@ -1950,7 +2084,7 @@ class Handler(BaseHTTPRequestHandler):
                                      # 连续画图：整张拼图也当成“一张”，不清前面的
                                      auto_place=True, clear_first=False,
                                      **place_opts(req),
-                                     progress=pg, sheet_names=names)
+                                     progress=pg, sheet_names=names, info=_info)
             except Exception as ex:
                 import traceback
                 log.append("⚠ 画到 CAD 失败: %s: %s" % (type(ex).__name__, ex))
@@ -1964,7 +2098,9 @@ class Handler(BaseHTTPRequestHandler):
             pass
         resp = {"svg": svg, "dxf_url": "/out/" + fn, "dxf_file": outpath, "dxf_name": fn,
                 "csv_url": ("/out/" + csv_fn) if csv_fn else "", "csv_name": csv_fn,
-                "sheets": names, "log": log}
+                "sheets": names, "log": log,
+                "dwg_file": _info.get("dwg", ""),
+                "dwg_name": (os.path.basename(_info["dwg"]) if _info.get("dwg") else "")}
         set_progress(100, "批量完成", log[-8:])
         PROGRESS["running"] = False
         sw = stale_warning()

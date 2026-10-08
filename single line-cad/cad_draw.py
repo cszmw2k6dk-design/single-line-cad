@@ -1211,8 +1211,12 @@ def draw_dxf_into_cad(dxf_path, dwg_path, log=None, use_original=False,
                       clear_first=True, progress=None, sheet_names=None,
                       auto_place=False, place_gap=PLACE_GAP,
                       place_per_col=PLACE_PER_COL, no_refresh_blocks=(),
-                      only_layers=OUR_LAYERS):
+                      only_layers=OUR_LAYERS, info=None):
     """把 dxf_path 的内容画进 dwg_path（默认画在副本上，不动原文件）。
+
+    info：可选 dict，画完往里回填 {"dwg": 真正画进去的那张 DWG 的完整路径,
+    "doc": CAD 里那份文档名} —— 界面要把这张 DWG 的路径显示出来、还要能“另存到…”，
+    所以得知道画进的是哪一份（默认是 out/ 里的 _画到CAD_xxx.dwg 副本）。
 
     auto_place=True（连续画图，用户口径）：
       **不清**前面已经画的图，接着往同一张 DWG 里画，只是把这一张错开 ----
@@ -1275,6 +1279,12 @@ def draw_dxf_into_cad(dxf_path, dwg_path, log=None, use_original=False,
                     cand = target
         target = cand
     doc, opened = find_doc(app, target)
+    if info is not None:
+        try:
+            info["dwg"] = os.path.abspath(target)
+            info["doc"] = doc.Name
+        except Exception:
+            pass
     log.append("画到: %s%s" % (doc.Name, "（脚本刚打开的）" if opened else "（本来就开着）"))
     for lay in ("WIRE", "WIRE_LABEL", "CONN_POS", "CONN_NEG", "0"):
         ensure_layer(doc, lay)
@@ -1358,3 +1368,59 @@ def draw_dxf_into_cad(dxf_path, dwg_path, log=None, use_original=False,
     log.append("没有自动保存，你在 CAD 里看过再决定存不存。")
     pg(100, "画到 CAD 完成（还没保存，你在 CAD 里确认后自己存）")
     return True
+
+
+def active_app(log=None):
+    """只连**已经开着**的 CAD（不新起一个）。没开着就返回 None。
+
+    和 connect() 的区别：connect 是“要画图了，没开就帮你开一个”，
+    而“另存 DWG”只是把已经画好的东西存出来，不应该凭空开一个 CAD 出来。
+    """
+    log = log if log is not None else []
+    if not HAVE_COM:
+        return None
+    pythoncom.CoInitialize()
+    for pid in PROGIDS:
+        try:
+            return win32com.client.GetActiveObject(pid)
+        except Exception:
+            continue
+    return None
+
+
+def save_as(src_dwg, dst_path, log=None):
+    """把画到 CAD 的那张图**另存**到 dst_path（用户口径 2026-10-08：能选保存位置）。
+
+    为什么要先回 CAD 存一次：画到 CAD 之后内容还在 CAD 内存里、没存过盘，
+    直接从 out/ 里拷那个 .dwg 文件，拷到的是**上一版**（第一次跑甚至只有外框图）。
+    所以顺序是：① 连上已经开着的 CAD → ② doc.Save() 把工作副本落盘 →
+    ③ 把这份文件复制到你选的位置。目标位置由界面上的“另存为”对话框给。
+
+    返回 (ok, 目标路径或失败原因)。
+    """
+    log = log if log is not None else []
+    src_dwg = os.path.abspath(src_dwg)
+    dst_path = os.path.abspath(dst_path)
+    d = os.path.dirname(dst_path)
+    if d and not os.path.isdir(d):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception as ex:
+            return False, "建不了文件夹 %s：%s" % (d, ex)
+    app = active_app(log)
+    if app is not None:
+        doc, _opened = find_doc(app, src_dwg, open_if_missing=False)
+        if doc is not None:
+            try:
+                doc.Save()                     # 工作副本（out/ 里那张）落盘
+            except Exception as ex:
+                log.append("⚠ CAD 保存工作副本失败(%s)：还是拷现有文件" % ex)
+        else:
+            log.append("⚠ CAD 里没有开着 %s：拷现有文件" % os.path.basename(src_dwg))
+    try:
+        import shutil
+        shutil.copy2(src_dwg, dst_path)
+    except Exception as ex:
+        return False, "另存失败：%s: %s" % (type(ex).__name__, ex)
+    log.append("已另存: %s" % dst_path)
+    return True, dst_path
