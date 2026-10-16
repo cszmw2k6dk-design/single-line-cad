@@ -19,6 +19,8 @@ Single-CAD_v*.zip
 
 # 手工/自动备份
 *_备份/
+blocklib/blocks/_backup_*/
+*/blocklib/blocks/_backup_*/
 *.bak
 _bak_*
 _手册_加*章前备份.docx

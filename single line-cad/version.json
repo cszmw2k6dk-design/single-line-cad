@@ -1,7 +1,7 @@
 {
-  "version": "v2.8",
-  "time": "2026-10-08 14:30:59",
-  "notes": "界面改版：方案拆成主方案(Harness/IBEX/LYNX Plus)+跳线方案、外框图挪到板子页只选一次、默认画到CAD、进度只报用时；生成后显示DWG路径并可另存到自己选的位置；修CBX与阵列行不在同一高度、CBX引线文字飘到块外、分段时后一段支架压住前一段、负极行块全叠在同一根端子上",
-  "commit": "da1b9a7",
+  "version": "v2.9",
+  "time": "2026-10-16 12:09:18",
+  "notes": "分段(x+y)落点与缩放：后一段线束含出线头整段下移（不再停在前一段高度）；整体缩放按整张内容算、左右外伸量按最大段保守估，不再顶出内图框。块库 11 个 .dxf 结构重整：清掉两千多条悬空 BLOCK_RECORD、补齐 NEG/CU-AI 缺的块记录与定义、句柄重排并同步 $HANDSEED —— CAD 现在能直接打开，图形图元逐字节未变（新增 block_repair.py，可 --dry-run 预演）",
+  "commit": "3d238d9",
   "url": "https://codeload.github.com/cszmw2k6dk-design/single-line-cad/zip/refs/heads/main"
 }

@@ -3174,11 +3174,27 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 # 于是两段阵列之间凭空多出一大截（填 30 量出 100 多）。
                 _ws = {_g: _arr[_g] for _g in _arr}
                 _tot = sum(_ws[_g] for _g in _seg_sizes) + brk_gap * (_nseg - 1)
+                # 用户口径 2026-10-09：“先放 CBX、再从左往右摆板子，最后按图框大小
+                # 整体缩放，不要超过内图框”。所以缩放要按**整张内容**算，不能只按
+                # 阵列条带 —— 第 1 段左边还有 CBX（还有线束/标注）伸出去一截，
+                # 只按阵列宽度缩的话，那一截就会顶出内图框（实测左边超 10 个单位）。
+                _left = max(0.0, L["abox"][0] - L["box"][0])     # 往左伸出去多少
+                _right = max(0.0, L["box"][1] - L["abox"][1])    # 往右伸出去多少
+                # 这里量到的是**第 1 段**的外伸量。线束的外伸（支线、CU-AI 转接、
+                # 末端接头、标注）大致随串数增加，所以按“最大段 / 第 1 段”的串数比例
+                # 放大，再留 8% 余量 —— 不然串数更多的后一段还是会顶出内框
+                # （实测 LYNX Plus 2+3 右边超 282 个单位）。
+                _ratio = max(1.0, max(_seg_sizes) / float(max(1, n_str)))
+                # 第 1 段量得到的那点外伸，未必是**后面那段**外伸的最大值；两块
+                # 都按“左右一样大”保守估一遍（线束基本是对着阵列左右摊开的），
+                # 这样宁可整体缩得稍小一点，也不会再顶出内框。
+                _over = max(_left, _right)
+                _full = _tot + 2.0 * _over * _ratio + _tot * 0.08
                 _av_w = (fbx[1] - fbx[0]) * (1 - 2 * inset_x)
                 _av_h = (fbx[3] - fbx[2]) * (1 - 2 * inset_y)
                 _ch = L["box"][3] - L["box"][2]
                 if _tot > 1e-6 and _ch > 1e-6:
-                    _kk = min(_av_w / _tot, _av_h / _ch)
+                    _kk = min(_av_w / _full, _av_h / _ch)
                     if not allow_up:
                         _kk = min(_kk, 1.0)
                     _x_of, _cur = [], 0.0
@@ -3186,6 +3202,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                         _x_of.append(_cur)
                         _cur += _ws[_g] + brk_gap
                     _seg_common = {"k": _kk, "tot": _tot, "x_of": _x_of,
+                                   "left": _left, "right": _right, "over": _over,
                                    "yc": (fbx[2] + fbx[3]) / 2.0,
                                    "box_cy": (L["box"][2] + L["box"][3]) / 2.0}
             except Exception:
@@ -3232,12 +3249,14 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 # 分段：整体（各段 + 段间跨支架）在画图区居中，各段按顺序往右排；
                 # 纵向共用同一条基准线 —— 所以每段的板子在同一高度，缩放也一致。
                 _sc = _seg_common
-                off = ((fbx[0] + fbx[1]) / 2.0 - _sc["tot"] * k / 2.0
-                       # 落点按**阵列自己的左边缘**（abox）对齐，不要用整段内容框
-                       # （box）的左边缘：每段的线束/起始块往左伸出去多少不一样
-                       # （第 1 段有 CBX、后面的段没有），用 box 对齐就会把后一段
-                       # 往左拽，两段的板子叠在一起（用户口径 2026-10-08：
-                       # “摆板子先从左往右摆好、再整体缩放”）。
+                # 落点按**阵列自己的左边缘**（abox）对齐，不要用整段内容框（box）
+                # 的左边缘：每段的线束/起始块往左伸出去多少不一样（第 1 段有 CBX、
+                # 后面的段没有），用 box 对齐就会把后一段往左拽，两段的板子叠在
+                # 一起（用户口径 2026-10-08：“摆板子先从左往右摆好、再整体缩放”）。
+                # 整条内容在“条带坐标”里从 -left 伸到 tot+over（over 见上面的保守估），
+                # 把它整体居中到画图区，边缘才不会顶出内框（用户口径 2026-10-09）。
+                _c_center = (_sc["tot"] + _sc["over"] - _sc["left"]) / 2.0
+                off = ((fbx[0] + fbx[1]) / 2.0 - _c_center * k
                        + _sc["x_of"][_si] * k - L["abox"][0] * k,
                        _sc["yc"] - _sc["box_cy"] * k)
             else:
@@ -3519,15 +3538,15 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             hp = L["hp"][idx]
             sc = hp["s"] * k
             yy = hp.get("y0", hp["P"][1] + L["hoff"][1])
-            # 线束落点：分段时逐段下移错开。但**钉在板子端子上的支线块**
-            # （正极支线/负极支线/末端接头）不跟着错开 —— 用户口径
-            # （2026-10-08：“出线部分和前一个支架类型长度间距保持一致”）：
-            # 它和面板之间那截“出线”必须和 x 段**一样长、一样角度**，
-            # 所以它留在面板正下方那一档；只有其余块（CBX/FUSE/接头/末端）
-            # 按段往下错开，线束行会在支线处折一下。
+            # 线束落点：分段（x+y 支架）时**整条线束**都跟着本段往下错开，
+            # 钉在板子端子上的正/负极支线、出线头也一样。
+            # 用户口径 2026-10-09：“x+y 类型的支架后面那一个的支线出线头整体
+            # 向上偏移”—— 以前这些钉位块被排除在错开之外（2026-10-08 那版是
+            # 为了“出线长度跟 x 段一致”），结果后一段的出线头留在**前一段**
+            # 的高度上，长距离垂下来；标注的界线也被它拉成一个大框，看着像
+            # 压住了别的东西。现在统一按段错开，出线头就落在本段线束行上。
             _q = (hp["P"][0] + L["hoff"][0], yy)
-            _pinned = (it["name"] in pos_names) or (it["name"] in neg_names)
-            P = F(_q) if _pinned else FH(_q)
+            P = FH(_q)
             emit_insert_rot(it["name"], P[0], P[1], sc, hp.get("rot", 0.0))
             # 块里 CONN-Label 层的点 = 这个块指定的“标注落点”，换算到图纸坐标备用。
             # **必须跟着块一起转**：负极那一行的块是旋转过的（接线头对准板子负极），
