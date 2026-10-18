@@ -508,11 +508,7 @@ HTML = r"""<!doctype html>
 <div class="wrap one" id="step1">
   <div class="panel"><h2>① 板子 · 块库 + 阵列</h2>
     <div class="grid" id="boardBlocks"></div>
-    <div class="row" style="margin-top:10px">
-      <label>模式</label>
-    <label><input type="radio" name="mode" value="array" checked onchange="setMode('array');schedulePreview()"> 光伏阵列 + 线束（一张图）</label>
-    <label><input type="radio" name="mode" value="batch" onchange="setMode('batch');schedulePreview()"> 批量（一行一张 · 每张一个 DXF）</label>
-    </div>
+    <!-- 只保留批量：一行 = 一张图（用户口径 2026-10-17） -->
     <div class="row" id="arrayRow" style="display:none">
       <!-- 组件块不让用户挑了：三个下拉藏起来，由“哪一端靠近汇流箱”自动决定首/中/尾块 -->
       <span id="modBox" style="display:none">
@@ -533,10 +529,11 @@ HTML = r"""<!doctype html>
     </div>
     <div class="row" id="arrayDetailRow" style="display:none">
       <!-- 下面这一行是阵列细节：串数、跨支架距离、净空、起始块 -->
-      <label>串数</label><input type="text" id="nstr" value="4" style="width:92px"
-        title="支持分段：4 = 一组 4 串；2+3 / 3+2 = 支架两侧各多少串，段与段之间走“跨支架距离”">
-      <label>跨支架距离</label><input type="number" id="brkgap" value="30" step="1"
-        title="串数写成分段（如 2+3）时，支架两侧之间的固定距离">
+      <!-- 串数只在批量表里逐行填（用户口径 2026-10-17）；这里留一个隐藏值给
+           实时预览/兼容旧接口用，界面上不再显示。 -->
+      <input type="hidden" id="nstr" value="4">
+      <label>跨支架距离</label><input type="number" id="brkgap" value="10" step="1"
+        title="串数写成分段（如 2+3）时，两段阵列边缘之间的距离，图上量就是填的这个数；串数没有 +、或用了拆分（只拆线束）时不作用">
       <label>板间净空</label><input type="number" id="gapx" value="1" step="1"
         title="同一串里，板与板之间的净空">
       <label>串间净空</label><input type="number" id="gapy" value="2" step="1"
@@ -554,7 +551,7 @@ HTML = r"""<!doctype html>
         <button class="ghost" onclick="addBhaSeg()" title="每个支架（每段）中点各一处，串数写 3+3 时就是前后各一个">每段中点插一处</button>
         <button class="ghost" onclick="clearBha()">清空</button>
         <span id="bhaHint" style="font-size:12px;color:var(--muted)">
-          两块板之间插一个 BHA 桩块（可再挂电机）；位置 = 整排第几块之后（不分串）：4 串 × 20 块共 80 块，填 40 就是正中间；0 或留空 = 最前面；写“每段” = 每段中点各一处。留空整列 = 不插桩。
+          两块板之间插一个 BHA 桩块（可再挂电机）；位置 = 整排第几块之后（不分串）。<b>留空 = 整排正中间</b>（1 串×28 块 → 14-15 之间；2 串×28 → 28-29；3 串×28 → 42-43）；填 0 = 最前面；写“每段” = 每段中点各一处。整行不填桩块/电机 = 不插桩。
           桩块/电机块从块库里选；块库里还没有 BHA 桩块时，可以先用电机块（MOTOR）顶 —— 插进去照样按桩算净空、它右边的板整体右移。</span>
       </div>
       <div id="bhaBox" style="max-height:118px;overflow:auto;border:1px solid var(--line);border-radius:8px">
@@ -588,6 +585,7 @@ HTML = r"""<!doctype html>
             <th style="text-align:left;padding:6px">图号</th>
             <th style="text-align:left;padding:6px">外框图</th>
             <th style="text-align:left;padding:6px">串数</th>
+            <th style="text-align:left;padding:6px">拆分</th>
             <th style="text-align:left;padding:6px">每串板数</th>
             <th style="text-align:left;padding:6px">主线线号</th>
             <th style="text-align:left;padding:6px">支线线号</th>
@@ -597,10 +595,8 @@ HTML = r"""<!doctype html>
         </table>
       </div>
       <div class="row" style="margin-top:0">
-        <label><input type="checkbox" id="bsheet"> 拼成一张图纸</label>
-        <span style="font-size:12px;color:var(--muted)">一行 = 一张图（各调一份新外框模板，互相独立）：默认
-          <b>每张各自出一个 DXF</b>（＋一个打包 zip）；勾上“拼成一张图纸”才全部拼进同一个 DXF。
-          勾了“直接画到 CAD”时：连着画的这些图<b>不清</b>前面的，都留在同一张 DWG 里、
+        <span style="font-size:12px;color:var(--muted)">一行 = 一张图（各调一份新外框模板，互相独立）。
+          不再生成 DXF：只把图直接画到 CAD。连着画的这些图<b>不清</b>前面的，都留在同一张 DWG 里、
           位置自动错开（同一列先从上往下排，排满了往右挪一列）。
           填完点“下一步：填线束”，在线束页按“生成”一次画完。
           BHA/电机位置只在上面那张“电机 / BHA 桩位置”里填（各行共用）。</span>
@@ -680,7 +676,6 @@ HTML = r"""<!doctype html>
              title="负极行和正极行的净空；负极支线块是竖的，程序会自动把它的身子让出来（行线再往下挪一个块高），不会压住正极行">
       <label><input type="checkbox" id="link"> 画阵列↔线束跨接线</label>
       <label><input type="checkbox" id="hspan" checked> 线束接点对齐缩放</label>
-      <label>间隔 GAP</label><input type="number" id="gap" value="40" step="5">
       <!-- 外框图模板挪到①板子页的“全局”那一行了（用户口径 2026-10-08：线束页不再重复选） -->
       <label><input type="checkbox" id="tocad" checked
         title="默认就画进 CAD 里那张外框图上；连着生成几张时不删前面的图，一张一张错开排（同一列先从上往下，排满了往右一列）。取消勾选才只出 DXF 文件"> 直接画到 CAD(COM)</label>
@@ -819,7 +814,7 @@ let framesReady=false;
 let lastBlocks=[];      // 块库里所有块名（给 BHA 桩/电机下拉用）
 let boardBlocks=[];     // 板子块库（画板子/阵列用）
 let harnessBlocks=[];   // 线束块库（组成线束链用）
-let mode='array';
+let mode='batch';
 let frameList=[];       // 外框图列表（批量模式的外框图下拉要用）
 let batchRows=[];       // 批量模式：一行 = 一张图（各自独立参数）
 let bhaRows=[];         // 电机/BHA 桩：一行 = 一处插入（整排第几块之后 / 桩块 / 电机块 …）
@@ -1126,7 +1121,7 @@ function applyPolarityNear(){
   set('mod1',b.f); set('mod2',b.m); set('mod3',b.l);
 }
 // 阵列模式的一组公共参数（阵列模式与批量模式共用；批量模式每行再覆盖串数/板数）
-const GAP_SHEET=60;           // 图与图之间的净空（界面上不再显示，固定用这个值）
+const GAP_SHEET=20;           // 图与图之间的净空（界面上不再显示，固定用这个值）
 function arrayCommon(){
   applyPolarityNear();          // 生成前再对齐一次，保证和“组件朝向”一致
   return {harness:chain, gap:parseFloat(v('gap',40))||40,
@@ -1192,8 +1187,13 @@ function addBha(pos,stub,motor,rot,gl,gr,note,nstr){
   renderBha();
 }
 function bhaTotalBlocks(){               // 整排总块数 = 各段串数之和 × 每串板数
-  const nper=parseInt(document.getElementById('nper').value)||0;
-  const gs=(document.getElementById('nstr').value||'').match(/\d+/g)||[];
+  // 批量模式没有“总体串数”那一格了：按第一行的串数/板数算（逐行填的那个）。
+  const r0=(mode==='batch'&&batchRows&&batchRows[0])?batchRows[0]:null;
+  const nper=parseInt(r0?(r0._nperEl?r0._nperEl.value:r0.n_per)
+                         :document.getElementById('nper').value)||0;
+  const nsSrc=r0?String(r0._nstrEl?r0._nstrEl.value:r0.n_str)
+                :String(document.getElementById('nstr').value||'');
+  const gs=(nsSrc||'').match(/\d+/g)||[];
   const ns=gs.reduce((a,b)=>a+parseInt(b),0)||0;
   return ns*nper;
 }
@@ -1225,8 +1225,8 @@ function renderBha(){
     eNS.title='这一行管几串的结构：留空 = 图里所有结构都插；填 4 = 只插 4 串那种结构（也能写 3+3）';
     eNS.style.width='70px'; eNS.oninput=()=>{r.nstr=eNS.value;}; c.appendChild(eNS);
     c=td(); const eS=document.createElement('input');
-    eS.type='text'; eS.value=r.pos; eS.placeholder='留空=最前面';
-    eS.title='整排第几块之后（不分串）：0/留空=最前面；4 串 × 20 块填 40 = 正中间；'
+    eS.type='text'; eS.value=r.pos; eS.placeholder='留空=中间';
+    eS.title='整排第几块之后（不分串）：留空 = 整排正中间（1 串×28 → 14，2 串×28 → 28，3 串×28 → 42）；0 = 最前面；'
            + '填得比总块数大就排到最后；写“每段”=每段中点各一处';
     eS.style.width='110px'; eS.oninput=()=>{r.pos=eS.value;}; c.appendChild(eS);
     [['stub','（桩块）'],['motor','（不带电机）']].forEach(function(pair){
@@ -1300,8 +1300,13 @@ function renderBatch(){
     c=td(); e=document.createElement('input'); e.type='text';
     e.value=r.n_str; e.style.width='70px'; e.title='串数：4 或 2+3（分段，段间走跨支架距离）';
     e.oninput=()=>{r.n_str=String(e.value||'').trim()||'1';};
-    r._nstrEl=e;                       // 预览直接读这一格当前显示的值，别用可能过期的对象值
+    r._nstrEl=e;
     c.appendChild(e);
+    c=td(); e=document.createElement('input'); e.type='text';
+    e.value=r.hz_split||''; e.placeholder='不填=不拆'; e.style.width='90px';
+    e.title='只拆线束、不拆板子：例如 2+2；留空 = 不拆';
+    e.oninput=()=>{r.hz_split=String(e.value||'').trim();};
+    r._hsplitEl=e; c.appendChild(e);
     c=td(); e=document.createElement('input'); e.type='number'; e.min='1';
     e.value=r.n_per; e.style.width='70px'; e.oninput=()=>{r.n_per=parseInt(e.value)||1;};
     r._nperEl=e; c.appendChild(e);
@@ -1334,8 +1339,8 @@ async function genBatch(){
     const c=tr.querySelectorAll('td');
     const val=function(k){ const cell=c[k]; if(!cell) return '';
       const e=cell.querySelector('input,select'); return e?String(e.value||'').trim():''; };
-    return {no:val(0), frame:val(1), n_str:val(2), n_per:val(3),
-            awg_main:val(4), awg_branch:val(5)};
+    return {no:val(0), frame:val(1), n_str:val(2), hz_split:val(3),
+            n_per:val(4), awg_main:val(5), awg_branch:val(6)};
   }).filter(function(r){ return r.n_str||r.no; });
   body.frame=frame0;
   body.rows=(rowsDom.length?rowsDom:batchRows);
@@ -1343,7 +1348,7 @@ async function genBatch(){
   body.gap_sheet_x=GAP_SHEET;      // 界面不再显示，用固定默认
   body.gap_sheet_y=GAP_SHEET;
   body.order=(document.getElementById('sheetorder')||{}).value||'row';
-  body.separate=!((document.getElementById('bsheet')||{}).checked);   // 默认：一行一张、各自出 DXF
+  body.separate=true;               // 只有批量：一行一张（不再出 DXF）
   body.to_cad=document.getElementById('tocad').checked;
   body.cad_original=false;          // 画到 CAD 一律画副本，不动外框原文件
   const r=await fetch('/api/generate_batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -1351,19 +1356,12 @@ async function genBatch(){
   progStop('完成');
   if(d.files){                       // 每张一个 DXF（默认）
     lastOut={dxf:(d.files[0]?d.files[0].name:''), csv:''};
-    const rowsHtml=d.files.map(f=>
-        '<div class="dlrow"><b style="min-width:110px">'+f.no+'</b>'+
-        '<button class="ghost" onclick="fileAct(\'open\',\''+f.name+'\')">用CAD打开</button> '+
-        '<button class="ghost" onclick="fileAct(\'export\',\''+f.name+'\')">DXF存桌面</button> '+
-        (f.csv_url?('<button class="ghost" onclick="fileAct(\'export\',\''+f.csv+'\')">CSV存桌面</button> '):'')+
-        (f.url?('<a class="dl" href="'+f.url+'" download>下载 DXF</a>'):'')+'</div>').join('');
     document.getElementById('out').innerHTML =
       '<div class="dlrow"><b>共 '+(d.total||d.files.length)+' 张，成功 '+d.files.length+' 张</b>'+
-        (d.zip_url?('<a class="dl" href="'+d.zip_url+'" download>下载全部(zip)</a> '):'')+
         '<button class="ghost" onclick="fileAct(\'reveal\')">打开输出文件夹</button>'+
         '<span id="fileMsg" style="font-size:12px;color:var(--muted);margin-left:8px"></span></div>'+
       dwgRow(d)+
-      rowsHtml+'<div id="log">'+(d.log||[]).join('\n')+'</div>';
+      '<div id="log">'+(d.log||[]).join('\n')+'</div>';
     RT(document.getElementById('out'));
     return;
   }
@@ -1455,7 +1453,7 @@ async function fileAct(act, name){
   if(box) RT(box);
 }
 loadBlocks();
-setMode('array');
+setMode('batch');
 gotoStep(1);            // 两步走：先板子，填完点“下一步”到线束
 bindPreview();          // 板子参数一改就重画预览
 setLang(LANG);          // 按上次选的语言把界面刷一遍（默认中文，等于没改）
@@ -1541,8 +1539,8 @@ def place_opts(req):
             return d
 
     return {"place_per_col": max(1, cols),
-            "place_gap": (f(req.get("gap_sheet_x"), 60.0),
-                          f(req.get("gap_sheet_y"), 60.0))}
+            "place_gap": (f(req.get("gap_sheet_x"), 20.0),
+                          f(req.get("gap_sheet_y"), 20.0))}
 
 
 def array_spec(req, over=None):
@@ -1556,6 +1554,7 @@ def array_spec(req, over=None):
                 module_mid=req.get("module_mid", ""),
                 module_last=req.get("module_last", ""),
                 n_strings=req.get("n_strings", 1), gap_x=req.get("gap_x", 1),
+                hz_split=req.get("hz_split", ""),
                 # dir 留空时由生成器按方案定（带 LYNX 的方案从下往上排，其余从左往右）
                 # 串间净空留空 = 跟板间净空一致（界面上已合并成一个值）
                 gap_y=(req.get("gap_y") or None), dir=(req.get("dir") or None),
@@ -1826,7 +1825,7 @@ class Handler(BaseHTTPRequestHandler):
         pg(85, "写 DXF 文件")
         os.makedirs(OUTDIR, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        fn = "array_%s.dxf" % ts
+        fn = "_tmp_%s.dxf" % ts
         outpath = os.path.join(OUTDIR, fn)
         with open(outpath, "w", encoding="latin-1", newline="") as f:
             f.write(text)
@@ -1865,7 +1864,7 @@ class Handler(BaseHTTPRequestHandler):
                                        only_blocks=_blks,
                                        # 连续画图：不清前面那张，接着在同一张 DWG 里
                                        # 错开排（从上往下、排满往右一列）
-                                       auto_place=True, clear_first=False,
+                                       auto_place=True, clear_first=False, reset_first=True,
                                        **place_opts(req),
                                        progress=pg, info=_info)
             except Exception as ex:
@@ -1879,9 +1878,13 @@ class Handler(BaseHTTPRequestHandler):
                                      wr._blocks_map(s2))
         except Exception:
             pass
-        resp = {"svg": svg, "dxf_url": "/out/" + fn,
+        try:
+            os.remove(outpath)          # 不再保留 DXF 文件（用户口径 2026-10-17）
+        except OSError:
+            pass
+        resp = {"svg": svg,
                 "csv_url": ("/out/" + csv_fn) if csv_fn else "",
-                "log": log, "dxf_file": outpath,
+                "log": log,
                 "dwg_file": _info.get("dwg", ""),
                 "dwg_name": (os.path.basename(_info["dwg"]) if _info.get("dwg") else "")}
         set_progress(100, "完成", log[-8:])
@@ -1930,6 +1933,7 @@ class Handler(BaseHTTPRequestHandler):
                     _nv = row.get("n_str")
                 _ns = "" if _nv is None else str(_nv).strip()
                 over = {"n_strings": (_ns or None),
+                        "hz_split": str(row.get("hz_split") or "").strip() or None,
                         "n_per": int(row.get("n_per") or 0) or None,
                         "awg_main": str(row.get("awg_main") or "").strip() or None,
                         "awg_branch": str(row.get("awg_branch") or "").strip() or None,
@@ -1974,7 +1978,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not text:
                     box["log"].append("⚠ %s 没画出来，跳过这张" % it["name"])
                     continue
-                fn = "%s_%s.dxf" % (safe_name(it["name"]), stamp)
+                fn = "_tmp_%s_%s.dxf" % (safe_name(it["name"]), stamp)
                 outpath = os.path.join(OUTDIR, fn)
                 with open(outpath, "w", encoding="latin-1", newline="") as f:
                     f.write(text)
@@ -2003,33 +2007,28 @@ class Handler(BaseHTTPRequestHandler):
                                 + wr.bha_block_names(spec.get("bha"), 0, 0))),
                             # 连续画图：每张都接着上一张往下排（不清图），
                             # 一列排满“每行放”那么多张就往右挪一列
-                            auto_place=True, clear_first=False,
+                            auto_place=True, clear_first=False, reset_first=(n == 1),
                             **place_opts(req),
                             progress=pg, info=_binfo)
                     except Exception as ex:
                         import traceback
                         box["log"].append("⚠ 画到 CAD 失败: %s: %s" % (type(ex).__name__, ex))
                         box["log"].extend(traceback.format_exc().strip().splitlines()[-4:])
-                files.append({"no": it["name"], "name": fn, "url": "/out/" + fn,
+                try:
+                    os.remove(outpath)     # 不再保留 DXF 文件
+                except OSError:
+                    pass
+                files.append({"no": it["name"], "name": "",
                               "csv": csv_fn,
                               "csv_url": ("/out/" + csv_fn) if csv_fn else "",
                               "dwg": _binfo.get("dwg", "")})
+                box["log"].append("✓ 第 %d/%d 张画好了（%s）" % (n, total, it["name"]))
+                set_progress(int(n * 100.0 / total), "第 %d/%d 张画好了" % (n, total),
+                             box["log"][-8:])
                 if _binfo.get("dwg") and _binfo["dwg"] not in _dwg_files:
                     _dwg_files.append(_binfo["dwg"])
             zip_fn = ""
-            if files:
-                zip_fn = "批量_%s.zip" % stamp
-                try:
-                    with zipfile.ZipFile(os.path.join(OUTDIR, zip_fn), "w",
-                                         zipfile.ZIP_DEFLATED) as z:
-                        for f in files:
-                            z.write(os.path.join(OUTDIR, f["name"]), f["name"])
-                            if f["csv"]:
-                                z.write(os.path.join(OUTDIR, f["csv"]), f["csv"])
-                except Exception as ex:
-                    box["log"].append("⚠ 打包 zip 失败: %s" % ex)
-                    zip_fn = ""
-            box["log"].append("批量完成：共 %d 张，成功 %d 张（每张一个 DXF）"
+            box["log"].append("批量完成：共 %d 张，成功 %d 张（不再生成 DXF 文件）"
                               % (total, len(files)))
             set_progress(100, "批量完成", box["log"][-8:])
             PROGRESS["running"] = False
@@ -2050,7 +2049,7 @@ class Handler(BaseHTTPRequestHandler):
 
         text, log, wires, names = wr.build_multi_frame(
             items, cols=req.get("cols", 2),
-            gap_x=req.get("gap_sheet_x", 60), gap_y=req.get("gap_sheet_y", 60),
+            gap_x=req.get("gap_sheet_x", 20), gap_y=req.get("gap_sheet_y", 20),
             order=req.get("order", "row"), log=box["log"], progress=pg)
         box["log"] = log
         if not text:
@@ -2082,7 +2081,7 @@ class Handler(BaseHTTPRequestHandler):
                                      use_original=False,      # 一律画副本，不动外框原文件
                                      copy_dir=OUTDIR, only_blocks=set(names),
                                      # 连续画图：整张拼图也当成“一张”，不清前面的
-                                     auto_place=True, clear_first=False,
+                                     auto_place=True, clear_first=False, reset_first=True,
                                      **place_opts(req),
                                      progress=pg, sheet_names=names, info=_info)
             except Exception as ex:

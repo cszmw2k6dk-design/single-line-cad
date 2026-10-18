@@ -10,6 +10,7 @@ single line-cad/out/
 
 # 打包产物：exe / 中间文件 / 整理好的发布文件夹（体积大，用脚本重新生成即可）
 single line-cad/dist/
+single line-cad/dist_*/
 single line-cad/build/
 single line-cad/*.spec.bak
 Barnett单线图生成器/

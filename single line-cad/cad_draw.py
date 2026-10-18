@@ -1111,8 +1111,30 @@ def clear_ours(doc, blocks, layers, log=None):
 # 落点记在 DWG 旁边的 .placed.json 里（同一张图跨几次生成 / 关掉窗口再开也接着排）；
 # 图上要是已经没有我们画的东西了（新副本、或者人在 CAD 里删光了），就从头排。
 
-PLACE_GAP = (60.0, 60.0)        # 图与图之间的净空（用户口径：挨近点就行，界面上不再调）
+PLACE_GAP = (20.0, 20.0)        # 图与图之间的净空（用户口径：挨近点就行，界面上不再调）
 PLACE_PER_COL = 2               # 一列排几张（界面“每行放”那个格）
+
+
+def clear_all_except_frame(doc, log=None):
+    """除“外框图”两个块引用外，把模型空间里的实体全部删掉（画新图前彻底清空）。"""
+    keep = ("FRAME1", "SLD_NOTES")
+    n = 0
+    try:
+        ents = list(doc.ModelSpace)
+    except Exception:
+        return 0
+    for e in ents:
+        try:
+            if (str(getattr(e, "EntityName", "") or "") == "AcDbBlockReference"
+                    and str(getattr(e, "Name", "") or "").upper() in keep):
+                continue
+            e.Delete()
+            n += 1
+        except Exception:
+            pass
+    if n and log is not None:
+        log.append("画新图：已清掉图里的旧内容 %d 个（保留外框图）" % n)
+    return n
 
 
 def place_file_of(dwg_path):
@@ -1211,7 +1233,7 @@ def draw_dxf_into_cad(dxf_path, dwg_path, log=None, use_original=False,
                       clear_first=True, progress=None, sheet_names=None,
                       auto_place=False, place_gap=PLACE_GAP,
                       place_per_col=PLACE_PER_COL, no_refresh_blocks=(),
-                      only_layers=OUR_LAYERS, info=None):
+                      only_layers=OUR_LAYERS, info=None, reset_first=False):
     """把 dxf_path 的内容画进 dwg_path（默认画在副本上，不动原文件）。
 
     info：可选 dict，画完往里回填 {"dwg": 真正画进去的那张 DWG 的完整路径,
@@ -1264,6 +1286,21 @@ def draw_dxf_into_cad(dxf_path, dwg_path, log=None, use_original=False,
         os.makedirs(d, exist_ok=True)
         cand = os.path.join(d, "_画到CAD_" + os.path.basename(dwg_path))
         doc0, _ = find_doc(app, cand, open_if_missing=False)
+        if reset_first:
+            if doc0 is not None:
+                try:
+                    doc0.Close(False)
+                    log.append("已关掉上一次的 CAD 副本（不保存）")
+                    doc0 = None
+                except Exception as ex:
+                    log.append("关不掉上一次的副本(%s)，只能接着用它" % ex)
+            if doc0 is None:
+                try:
+                    shutil.copyfile(dwg_path, cand)
+                    log.append("已从外框模板重做一份干净副本: %s" % os.path.basename(cand))
+                except Exception as ex:
+                    log.append("复制副本失败(%s)，直接画在原文件上" % ex)
+                    cand = target
         if doc0 is None:                       # 副本没开着才拷，开着就被 CAD 锁着
             if os.path.exists(cand):
                 # 上次那张副本还在（可能已经存过盘）：**接着用**，别拿外框图盖掉它
@@ -1307,7 +1344,14 @@ def draw_dxf_into_cad(dxf_path, dwg_path, log=None, use_original=False,
         if rect is None:
             log.append("⚠ 量不出这张图的范围，按原位画（可能会和上一张叠在一起）")
             rect = (0.0, 0.0, 0.0, 0.0)
+        if reset_first:
+            try:
+                clear_all_except_frame(doc, log)
+            except Exception:
+                pass
         st = load_places(target)
+        if reset_first:
+            st = {"sheets": []}
         if count_ours(doc, only_blocks, OUR_LAYERS) <= 0 and st.get("sheets"):
             # 图上已经没有我们画的东西了（新副本 / 人在 CAD 里删光了）→ 从头排
             st = {"sheets": []}

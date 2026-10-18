@@ -1599,22 +1599,30 @@ def bha_pos_to_cell(pos, n_str, n_per):
     """整排“第几块之后” -> (0 基串号, 该串里第几块之后)。
 
     位置口径（v1.3 起）：**整个阵列连续数**的板号，不分串。
+        留空 = 整排正中间（总块数的一半：1 串×28 → 14；2 串×28 → 28；3 串×28 → 42）
         0  = 最前面（第 1 串第 1 块之前）
         1  = 第 1 块之后
         40 = 4 串 × 20 块（共 80 块）时，正好落在第 2 串和第 3 串中间
     填得比总块数还大 = 排到最后一块之后。
     返回 None 表示这一格写的是“每段”，交给 bha_group_expand 按段展开。
     """
+    ns = max(1, int(n_str or 1))
+    per = int(n_per or 0)
     t = str(pos if pos is not None else "").strip()
     if t in BHA_SEG_WORDS or t.lower() in BHA_SEG_WORDS:
         return None
-    try:
-        n = int(float(t)) if t else 0
-    except (TypeError, ValueError):
-        n = 0
+    if t == "":
+        # 留空 = **整排正中间**（用户口径 2026-10-17）：
+        #   1 串 × 28 块 → 第 14 块之后（14-15 之间）
+        #   2 串 × 28 块 → 第 28 块之后（两串之间）
+        #   3 串 × 28 块 → 第 42 块之后（中间那串的 14-15 之间）
+        n = (ns * per) // 2 if per > 0 else 0
+    else:
+        try:
+            n = int(float(t))
+        except (TypeError, ValueError):
+            n = 0
     n = max(0, n)
-    ns = max(1, int(n_str or 1))
-    per = int(n_per or 0)
     if per < 1:                     # 还不知道每串多少块：退化成“全插在第 1 串”
         return 0, n
     if n >= ns * per:
@@ -1649,7 +1657,7 @@ def parse_bha(v, n_str=0, n_per=0):
                                "rot":0, "gap_l":2, "gap_r":2}
       · 一行文字（批量模式每行、命令行）："40:BHA:MOTOR:0:2:2"
             整排第几块之后 : 桩块 : 电机块 : 电机旋转 : 桩左净空 : 桩右净空
-            位置留空 = 最前面(0)；写“每段” = 每段（每个支架）中点各一处；
+            位置留空 = 整排正中间；写 0 = 最前面；写“每段” = 每段（每个支架）中点各一处；
             后面的字段都可以省。
       · 多条用 ";" 或换行隔开。
 
@@ -1706,13 +1714,17 @@ def parse_bha(v, n_str=0, n_per=0):
         fields = [p.strip() for p in line.split(":")]
         f0 = fields[0] if fields else ""
         f1 = fields[1] if len(fields) > 1 else ""
-        # 前两格都是数字 = “串数:位置”；否则第一格就是位置（没写 = 最前面 0）
+        # 前两格都是数字 = “串数:位置”；否则第一格就是位置（没写 = 整排中间）
         if (re.fullmatch(r"\d+", f0 or "") and re.fullmatch(r"\d+(\.\d+)?", f1 or "")):
             nstr, f = int(f0), (fields[1:] + [""] * 6)[:6]
         elif f0 and _is_bha_pos_field(f0):
             nstr, f = 0, (fields + [""] * 6)[:6]
+        elif f0:
+            # 第一格是块名、没写位置 → 位置留空 = 整排中间
+            nstr, f = 0, [""] + (fields + [""] * 6)[:5]
         else:
-            nstr, f = 0, ["0"] + (fields + [""] * 6)[:5]
+            # 第一格就是空的位置（":BHA:MOTOR"）
+            nstr, f = 0, (fields + [""] * 6)[:6]
         if not (f[1] or f[2]):
             continue
         out.append(mk(f[0], f[1], f[2], float(_num(f[3], 0.0) or 0.0),
@@ -2545,12 +2557,31 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
     # ---- 电机 / BHA 桩：插在某一串的两块板之间（手册 13.5 阶段③） ----
     # 界面给的是小表（结构化），批量的每一行 / 命令行给的是一行文字（见 parse_bha）。
     # ---- 分段串数：同一次调用里按段循环画（先画前一种串数的阵列+线束，再画下一种，整体下移错开） ----
-    _seg_sizes = ([int(g) for g in s_groups] if (len(s_groups) > 1 and not spec.get("_no_split")) else [n_str])
+    # 「拆分」：只拆线束、不拆板子。例：串数 4 + 拆分 2+2。
+    _hsplit = parse_string_groups(spec.get("hz_split"), 0) if str(spec.get("hz_split") or "").strip() else []
+    if _hsplit:
+        if sum(_hsplit) != n_str:
+            return None, log + ["拆分 %s = %d 串，和串数 %s（共 %d 串）对不上：拆分之和必须等于总串数"
+                                % ("+".join(str(x) for x in _hsplit), sum(_hsplit),
+                                   spec.get("n_strings"), n_str)], []
+    _seg_sizes = ([int(g) for g in _hsplit] if _hsplit else
+                  ([int(g) for g in s_groups] if (len(s_groups) > 1 and not spec.get("_no_split")) else [n_str]))
+    _n_str_total = sum(int(g) for g in _seg_sizes)      # 拆分/分段前的总串数
+    if _hsplit:
+        # 拆分只拆线束：交界处必须和普通串间净空一样，板子才是一整排
+        brk_gap = gap_y
     _nseg = len(_seg_sizes)
+    if _nseg <= 1:
+        log.append("跨支架距离: 本次串数只有一段（没有 +），此值不作用")
     _need_all = []          # 各段用到的块名（收尾要把它们一起并进外框，见循环后面）
     _stats_names = []       # 各段**真正画出去**的顶层块名（回填 stats["blocks"]，见收尾）
     _seg_common = None      # 分段共用的一套排版：同一个 k + 同一条水平线（见下面“缩放”）
+    # 出线头对齐的目标横坐标（整张图最左边那个出线头的左边缘，单位空间）。
+    # 跨段共用：x+y 时后面那一段的出线头也要落到同一条竖线上（用户口径）。
+    _head_align = [None]
+    _seg_widths = []        # 各段阵列的**实际**宽度（单位空间；含电机桩顶开的那一截）
     for _si, _gsz in enumerate(_seg_sizes):
+        _seg_off = sum(_seg_sizes[:_si])     # 本段第一串在整排里的 0 基串号
         n_str = _gsz
         log.append("【段 %d/%d】本段 %d 串（调试）" % (_si + 1, _nseg, _gsz))
         # ---- 每段自己的线束链 ----
@@ -2600,11 +2631,30 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 neg_from = len(harness)
                 harness.extend(_seq_n)
         neg_names = [x for x in (neg_feed, neg_plug) if x]
-        bha = parse_bha(spec.get("bha"), n_str, n_per)
-        # 只留管这种串数结构的条目（串数留空 = 所有结构都插）
-        bha = [e for e in bha if not e.get("nstr") or int(e["nstr"]) == n_str]
-        # 位置写“每段” = **每段一个电机**（3+3 → 前 3 串一个、后 3 串一个）
-        bha, _shrunk = bha_group_expand(bha, s_groups)
+        if _hsplit:
+            # 「拆分」= 板子还是一整排（总串数），只有线束拆成几套。
+            # 电机/BHA 的位置按**整排连续块号**算（4 串 × 20 块填 40 = 第 2/3 串之间），
+            # 然后只落到它所在的那一组里 —— 不能每组各插一次（以前 2+2 会插两个电机）。
+            bha = parse_bha(spec.get("bha"), _n_str_total, n_per)
+            bha = [e for e in bha if not e.get("nstr")
+                   or int(e["nstr"]) in (_n_str_total, n_str)]
+            bha, _shrunk = bha_group_expand(bha, s_groups)
+            _bha_here = []
+            for e in bha:
+                ss = e.get("strings")
+                if ss is None:
+                    _bha_here.append(dict(e, strings={0}))
+                    continue
+                loc = {x - _seg_off for x in ss if _seg_off <= x < _seg_off + n_str}
+                if loc:
+                    _bha_here.append(dict(e, strings=loc))
+            bha = _bha_here
+        else:
+            bha = parse_bha(spec.get("bha"), n_str, n_per)
+            # 只留管这种串数结构的条目（串数留空 = 所有结构都插）
+            bha = [e for e in bha if not e.get("nstr") or int(e["nstr"]) == n_str]
+            # 位置写“每段” = **每段一个电机**（3+3 → 前 3 串一个、后 3 串一个）
+            bha, _shrunk = bha_group_expand(bha, s_groups)
         if _shrunk:
             log.append("BHA/电机: 位置写“每段”的条目按“每段中点各一处”处理（共 %d 段）→ 落在 %s"
                        % (len(s_groups), "、".join("串%d" % (k + 1)
@@ -2816,7 +2866,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             跟着右移，支线自然跟着挪过去。
             """
             if not hinsts:
-                return []
+                return [], 0, None
             # 缩放口径：**所有线束块的接点间距统一**（取各块右侧接点间距的几何平均当目标），
             # 这样块与块之间的连线才是平的、间距才一致（“连接点缩放到对齐”）。
             # 再乘一个 harness_scale 方便手工微调。
@@ -3095,7 +3145,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 log.append("线束缩放: " + ", ".join(
                     "%s x%.3f" % (hinsts[i]["name"], scales[i]) for i in range(len(hinsts)))
                     + "（所有线束块按“接点间距一致”缩放；板子出线点间距 %.2f）" % panel_span)
-            return places
+            return places, first_feed, neg_from
 
         def layout(gx, gy):
             """gx=板间净空, gy=串间净空（都用净空，pitch 由块宽算出来）。"""
@@ -3104,7 +3154,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             cells, abox = _place_array(tmpls, n_str, mw + gx, gx, gy, dirn,
                                        groups=[n_str], group_gap=brk_gap)
             modmap = {(c["mi"], c["s"]): c for c in cells if c["mi"] is not None}
-            hp = place_harness(modmap, abox)
+            hp, _ff, _nf = place_harness(modmap, abox)
             # 起始块（CBX）钉在阵列那一排，不参与“线束行”的定位
             head_i = [i for i, p in enumerate(hp)
                       if head_blk and p.get("name") == head_blk]
@@ -3138,9 +3188,14 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
             _ann_pad = 40.0
             box = (box[0], box[1], box[2] - _ann_pad, box[3] + _ann_pad)
             return {"cells": cells, "modmap": modmap, "abox": abox, "hoff": hoff,
-                    "box": box, "hp": hp}
+                    "box": box, "hp": hp,
+                    # 出线头对齐用：正极行第一根支线的下标 / 负极行起始下标 /
+                    # 正极行第一个“非 CBX”块的下标（CBX 是单独摆在阵列左边的）
+                    "first_feed": _ff, "neg_from": _nf,
+                    "hpos0": (1 if (head_blk and hp and hp[0].get("name") == head_blk) else 0)}
 
         L = layout(gap_x, gap_y)
+        _seg_widths.append(max(0.0, L["abox"][1] - L["abox"][0]))
         # 这一段画出去的顶层块，**跨段累计**（起始块 CBX 只在第 1 段的链里）：
         # 只按最后一段算的话，画到 CAD 时 CBX 会被跳过 —— 分段图丢汇流箱就是这么来的。
         for _c in L["cells"]:
@@ -3158,7 +3213,7 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
         # ---- 缩放（13.7）：可用区 = 画图区 左右各内缩 inset_x、上下各内缩 inset_y ----
         rect = frame_draw_rect(sec)
         fbx = rect or _records_bbox(group_entities(sec.get("ENTITIES", [])), bmap)
-        if fbx and _seg_common is None and _nseg > 1 and not (spec.get("bha") or []):
+        if fbx and _seg_common is None and _nseg > 1:
             # 分段：所有段共用**同一个 k 和同一条水平线** —— 板子才在同一高度、大小也一致。
             # 各段的“内容宽”在这里量：阵列本身用 _place_array 精确算（串数不同宽度不同），
             # 线束/起始块那些外伸量按本段实测的差值当常数补上（实测每多一串恒定 +305）。
@@ -3173,7 +3228,28 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 # 填 30 就该量出 30）。以前这里把“线束/起始块那些外伸量”也加进每段宽度，
                 # 于是两段阵列之间凭空多出一大截（填 30 量出 100 多）。
                 _ws = {_g: _arr[_g] for _g in _arr}
-                _tot = sum(_ws[_g] for _g in _seg_sizes) + brk_gap * (_nseg - 1)
+                # 插了电机/BHA 桩的段会变宽（桩把右边的板整体顶开）。这里按条目数
+                # 留一笔保守余量，免得整体缩放算小了、最后一段顶出内图框。
+                try:
+                    _bha_pad = 3.0 * mw * len(parse_bha(spec.get("bha"), _n_str_total, n_per))
+                except Exception:
+                    _bha_pad = 0.0
+                # 跨支架距离：界面上填 10，图上量两段阵列边缘就是 10（画图单位）。
+                # 整张图会按 k 缩放，所以这里先按一个粗估的 k 换算成“单位空间”的
+                # 间距，再重算一次 k。拆分（hz_split）例外：交界要跟板间净空一样，
+                # 板子才连成一整排。
+                _av_w0 = (fbx[1] - fbx[0]) * (1 - 2 * inset_x)
+                _av_h0 = (fbx[3] - fbx[2]) * (1 - 2 * inset_y)
+                _ch0 = max(1e-6, L["box"][3] - L["box"][2])
+                _tot0 = (sum(_ws[_g] for _g in _seg_sizes)
+                         + brk_gap * (_nseg - 1) + _bha_pad)
+                _kk0 = min(_av_w0 / max(1e-6, _tot0 * 1.16), _av_h0 / _ch0)
+                if not allow_up:
+                    _kk0 = min(_kk0, 1.0)
+                _gap_u = (brk_gap if _hsplit
+                          else brk_gap / max(_kk0, 1e-6))
+                _tot = (sum(_ws[_g] for _g in _seg_sizes)
+                        + _gap_u * (_nseg - 1) + _bha_pad)
                 # 用户口径 2026-10-09：“先放 CBX、再从左往右摆板子，最后按图框大小
                 # 整体缩放，不要超过内图框”。所以缩放要按**整张内容**算，不能只按
                 # 阵列条带 —— 第 1 段左边还有 CBX（还有线束/标注）伸出去一截，
@@ -3189,22 +3265,42 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 # 都按“左右一样大”保守估一遍（线束基本是对着阵列左右摊开的），
                 # 这样宁可整体缩得稍小一点，也不会再顶出内框。
                 _over = max(_left, _right)
-                _full = _tot + 2.0 * _over * _ratio + _tot * 0.08
                 _av_w = (fbx[1] - fbx[0]) * (1 - 2 * inset_x)
                 _av_h = (fbx[3] - fbx[2]) * (1 - 2 * inset_y)
                 _ch = L["box"][3] - L["box"][2]
                 if _tot > 1e-6 and _ch > 1e-6:
-                    _kk = min(_av_w / _full, _av_h / _ch)
-                    if not allow_up:
-                        _kk = min(_kk, 1.0)
+                    # 跨支架距离要按**图上**的 10 来算，而 k 又依赖总宽：迭代两三次
+                    # 把这两个数收敛（拆分时交界用板间净空，不迭代）。
+                    _kk = 1.0
+                    for _it in range(4):
+                        _full = _tot + 2.0 * _over * _ratio + _tot * 0.08
+                        _kk = min(_av_w / _full, _av_h / _ch)
+                        if not allow_up:
+                            _kk = min(_kk, 1.0)
+                        if _hsplit:
+                            break
+                        _gu = brk_gap / max(_kk, 1e-6)
+                        _tot_new = (sum(_ws[_g] for _g in _seg_sizes)
+                                    + _gu * (_nseg - 1) + _bha_pad)
+                        if abs(_tot_new - _tot) < 1e-6:
+                            break
+                        _gap_u, _tot = _gu, _tot_new
                     _x_of, _cur = [], 0.0
                     for _g in _seg_sizes:
                         _x_of.append(_cur)
-                        _cur += _ws[_g] + brk_gap
+                        _cur += _ws[_g] + _gap_u
                     _seg_common = {"k": _kk, "tot": _tot, "x_of": _x_of,
+                                   "gap_u": _gap_u,
                                    "left": _left, "right": _right, "over": _over,
                                    "yc": (fbx[2] + fbx[3]) / 2.0,
                                    "box_cy": (L["box"][2] + L["box"][3]) / 2.0}
+                    if _hsplit:
+                        log.append("跨支架距离: 本次是拆分（%s），板子保持一整排，"
+                                   "此项不作用（线束按套上下错开）"
+                                   % "+".join(str(x) for x in _hsplit))
+                    else:
+                        log.append("跨支架距离: 填 %.1f → 图上两段阵列边缘之间 %.1f"
+                                   % (brk_gap, _gap_u * _kk))
             except Exception:
                 _seg_common = None
         k = 1.0
@@ -3256,8 +3352,12 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 # 整条内容在“条带坐标”里从 -left 伸到 tot+over（over 见上面的保守估），
                 # 把它整体居中到画图区，边缘才不会顶出内框（用户口径 2026-10-09）。
                 _c_center = (_sc["tot"] + _sc["over"] - _sc["left"]) / 2.0
+                # 横向落点用**前面各段实测的阵列宽度**（插了电机桩的段会变宽），
+                # 这样两段阵列之间始终只隔“跨支架距离”，板子不会被拉开或叠在一起。
+                _gap_u = _sc.get("gap_u", brk_gap)
+                _x_here = sum(_seg_widths[i] + _gap_u for i in range(_si))
                 off = ((fbx[0] + fbx[1]) / 2.0 - _c_center * k
-                       + _sc["x_of"][_si] * k - L["abox"][0] * k,
+                       + _x_here * k - L["abox"][0] * k,
                        _sc["yc"] - _sc["box_cy"] * k)
             else:
                 off = ((fbx[0] + fbx[1]) / 2.0 - (L["box"][0] + L["box"][1]) / 2.0 * k,
@@ -3270,6 +3370,57 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                     ("%.0fx%.0f" % (fbx[1] - fbx[0], fbx[3] - fbx[2])) if fbx else "无",
                     off[0], off[1]))
         pg(60, "缩放/定位完成")
+
+        # ---- 出线头对齐（用户口径 2026-10-17）----
+        # 每个支架里，正极行和负极行的“出线头块”左边缘要落在同一条竖线上；
+        # x+y（分段）时，后面那一段的出线头也对到**整张图最左边**那个出线头。
+        # 只动出线头块 + 紧跟的第一个 FUSE（第二个 FUSE 及后面的块不动）；
+        # 头块挪开后，它到第一根支线的那段线自然变长（线缆连线延长）。
+        # 负极出线头是转 180° 的块：旋转后左边缘 = -bb[1]，不是 bb[0]。
+        _hp_all = L["hp"]
+
+        def _head_left_draw(p):
+            b, s0 = p["bb"], p["s"]
+            try:
+                rot = abs(float(p.get("rot", 0.0) or 0.0)) % 360.0
+            except (TypeError, ValueError):
+                rot = 0.0
+            lx = (p["P"][0] - b[1] * s0) if rot > 90.0 else (p["P"][0] + b[0] * s0)
+            return lx * k + off[0]
+
+        def _shift_head(pls, ddx):
+            """按图纸坐标平移一组块（内部按单位空间调整，k 一起换算）。"""
+            du = ddx / k if abs(k) > 1e-9 else 0.0
+            for _p in pls:
+                _p["P"] = (_p["P"][0] - du, _p["P"][1])
+                _p["outs"] = [(x - du, y) for x, y in _p["outs"]]
+                _p["lins"] = [(x - du, y) for x, y in _p["lins"]]
+                _p["right"] -= du
+
+        def _head_group(start, stop):
+            if start is None or start >= len(_hp_all) or start >= stop:
+                return []
+            g = [_hp_all[start]]
+            j = start + 1
+            if j < stop and _squash(_hp_all[j].get("name")) == _squash(fuse_blk):
+                g.append(_hp_all[j])
+            return g
+
+        _hp_head = _head_group(L.get("hpos0"), L.get("first_feed", 0))
+        _hn_head = (_head_group(L.get("neg_from"), len(_hp_all))
+                    if L.get("neg_from") is not None else [])
+        _heads = [g for g in (_hp_head, _hn_head) if g]
+        if _heads:
+            _lefts = [_head_left_draw(g[0]) for g in _heads]
+            _tgt = min(_lefts) if _head_align[0] is None else min(_head_align[0], min(_lefts))
+            _head_align[0] = _tgt
+            for _g, _lx in zip(_heads, _lefts):
+                if _lx - _tgt > 1e-6:
+                    _shift_head(_g, _lx - _tgt)
+            _after = [_head_left_draw(g[0]) for g in _heads]
+            log.append("出线头对齐: %s → 左边缘 %.1f（只动头块%s）" %
+                       (" / ".join("%.1f" % x for x in _after), _tgt,
+                        " + 第一个 FUSE" if any(len(g) > 1 for g in _heads) else ""))
 
         def F(p):
             """单位空间 -> 图纸坐标。"""
@@ -3375,8 +3526,12 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
         def emit_wire(a, b):
             return emit_wire_c(a, b, 1)
 
+        _hlines = []          # 已画出的水平线 (x1, x2, y)：线号要躲开同一束里的每一根
+
         def emit_wire_c(a, b, col):
             """col: 1=红(正极那一路)  7=白(负极那一路)"""
+            if abs(a[1] - b[1]) < 1e-6:
+                _hlines.append((a[0], b[0], a[1]))
             for c, v in [("0", "LINE"), ("5", nh()), ("330", mspace or "0"),
                          ("100", "AcDbEntity"), ("8", "WIRE"), ("62", str(col)),
                          ("100", "AcDbLine"),
@@ -3642,8 +3797,11 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
         _feed_only = [x for x in (pos_feed, neg_feed) if x]
         _first_feed_i = next((i for i, _it in enumerate(hinsts)
                               if _it["name"] in _feed_only), len(hinsts))
+        # 负极行的第一块是**出线头**（和 CBX 对齐的那个接头），它后面到第一根
+        # 负极支线的那一段是主线 —— 不能把它当成链尾接头（否则第一段被标成支线线号）。
         _plugs_tail = set(i for i, _it in enumerate(hinsts)
-                          if _it["name"] in plug_names and i >= _first_feed_i)
+                          if _it["name"] in plug_names and i >= _first_feed_i
+                          and (neg_from is None or i != neg_from))
         for idx in range(1, len(hinsts)):
             if head_blk and (hinsts[idx - 1]["name"] == head_blk or hinsts[idx]["name"] == head_blk):
                 continue      # 起始块（CBX）是独立摆在阵列左边的，不和线束链连线
@@ -3783,9 +3941,16 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
         for _r, _ys in _row_ys.items():
             if _ys:
                 _ys = sorted(_ys)
+                # 同一段有 2 根平行线时，线号要抬到**最高那根**的上面；
+                # 标注线也跟着抬同样多，免得线号顶到标注线上。
+                _lift = 0.0
+                for _yy in _ys:
+                    for _x1, _x2, _y2 in _hlines:
+                        if abs(_y2 - _yy) <= 12.0 and _y2 - _yy > _lift:
+                            _lift = _y2 - _yy
                 # 标注线高度**跟着线号的高度走**（用户口径）：线号中心在线束上方
                 # 0.62 个字高处、字高 _lab_th，所以标注线放在“线号上边再抬一点点”。
-                y_lab_of[_r] = (_ys[len(_ys) // 2] + _lab_th * 0.62 + _lab_th / 2.0
+                y_lab_of[_r] = (_ys[len(_ys) // 2] + _lift + _lab_th * 0.62 + _lab_th / 2.0
                                 + max(_dim_th * 0.35, 1.0))
         # 某一行没有“基准线”时（比如只有跨接线）：退回所有标注里最低的那条线
         _fallback = min([y for _ys in _row_ys.values() for y in _ys], default=0.0)
@@ -3836,30 +4001,36 @@ def build_array_frame(frame, spec, log=None, progress=None, stats=None):
                 pm = _perp(pa, pb)
                 if pm:
                     mx, my, nx, ny = pm
-                    # 几何中心对在这段线束中点的正上方，**贴到最近但不压线**：
-                    # 中心离导线 0.62 个字高 → 文字下边离导线 0.12 个字高（≈0.5）
-                    _cx = mx + nx * _lab_th * 0.62
-                    _cy = my + ny * _lab_th * 0.62
-                    # 万一这段太短、字正好压在旁边的块上：先往上让（但别顶到长度
-                    # 标注那条线上），上面实在没位置就放到导线下方 —— 目标就是
-                    # “尽可能靠近线束、但不和任何东西重叠”。
+                    # 线号**一律放在线的上方**（用户口径 2026-10-18）：
+                    # 几何中心离导线 0.62 个字高 → 文字下边离导线 0.12 个字高。
+                    # 上方正好压着块时，只沿着线左右挪，绝不放到线的下面
+                    # （以前会退到导线下方，看着就像线号和线叠在一起）。
+                    _cx0 = mx + nx * _lab_th * 0.62
+                    # 同一段常常有 2 根平行线（正/负极各一对接点）：线号要落在
+                    # **这一束里最高的那根**上面，不能夹在两根线中间
+                    # （以前就夹在两根线之间，看着像和线叠在一起）。
+                    _base = my
+                    if abs(ny) > 0.5:          # 水平线才按“上方”算
+                        for _x1, _x2, _yy in _hlines:
+                            if (min(_x1, _x2) - 1.0 <= _cx0 <= max(_x1, _x2) + 1.0
+                                    and abs(_yy - my) <= 12.0 and _yy > _base):
+                                _base = _yy
+                    _cy = _base + ny * _lab_th * 0.62
                     _w = _lab_th * 0.62 * max(1, len(str(awg)))
-                    _y_lab = y_lab_of.get(row, _cy)
-                    _cands = [_cy]
-                    _up = _cy
-                    for _try in range(8):
-                        _up += _lab_th * 0.55
-                        if _up + _lab_th / 2 > _y_lab - _lab_th * 0.8:
+                    _lo, _hi = min(pa[0], pb[0]), max(pa[0], pb[0])
+                    _picked = None
+                    for _step in range(0, 16):
+                        for _sgn in ((0,) if _step == 0 else (1, -1)):
+                            _tx = _cx0 + _sgn * _step * _w * 0.7
+                            if (_lo - _w <= _tx <= _hi + _w
+                                    and not _hits_block(_tx - _w / 2, _cy - _lab_th / 2,
+                                                        _tx + _w / 2, _cy + _lab_th / 2)):
+                                _picked = _tx
+                                break
+                        if _picked is not None:
                             break
-                        _cands.append(_up)
-                    _cands.append(my - _lab_th * 0.62)          # 退路：导线下方
-                    _cy = _cands[0]
-                    for _c in _cands:
-                        if not _hits_block(_cx - _w / 2, _c - _lab_th / 2,
-                                           _cx + _w / 2, _c + _lab_th / 2):
-                            _cy = _c
-                            break
-                    emit_label(_cx, _cy, awg, h=_lab_th, center=True)
+                    emit_label(_picked if _picked is not None else _cx0,
+                               _cy, awg, h=_lab_th, center=True)
 
         # ---- 总长标注（红色）：一条线束从第一个块的 CONN-Label 到最后一个块的
         # CONN-Label，放在线束的**正下方**，离行线的距离和蓝色标注一样（镜像）。
