@@ -449,9 +449,11 @@ def frame_draw_rect(sec, min_ratio=0.05):
         w, h = max(xs) - min(xs), max(ys) - min(ys)
         if w <= 1e-6 or h <= 1e-6:
             continue
-        if allbox:
-            if w * h < (allbox[1] - allbox[0]) * (allbox[3] - allbox[2]) * min_ratio:
-                continue
+        # 以前这里按“整张图的外接框”比例过滤小矩形；可模板里只要有几根杂线
+        # 伸到图框外很远（V2 模板就是这样），整张图的外接框会被撑大十几倍，
+        # 真正的外框/内框反而被当成“小矩形”滤掉 → frame_draw_rect 返回 None，
+        # 画图区退化成整张图，内容压到标题栏上。这里改成**按面积从大到小挑**，
+        # 小矩形自然排在后面，不再受杂线影响（用户口径 2026-10-19 换 V2 模板）。
         rects.append((w * h, (min(xs), max(xs), min(ys), max(ys))))
     if not rects:
         return None
